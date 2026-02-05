@@ -27,6 +27,9 @@ const httpServer = http.createServer((req, res) => {
     ".html": "text/html",
     ".js": "application/javascript",
     ".css": "text/css",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".ogg": "audio/ogg",
   };
 
   fs.readFile(filePath, (err, data) => {

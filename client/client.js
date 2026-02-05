@@ -19,37 +19,48 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 const WS_URL = `ws://${window.location.host}`;
 
 // =============================================================================
+// BACKGROUND MUSIC CONFIGURATION
+// MP3 file is in the client folder alongside other assets
+// =============================================================================
+const BGM_PATH = "tron-background-music.mp3";
+const BGM_VOLUME = 0.2; // Low default volume
+const BGM_STORAGE_KEY = "tron_music_enabled";
+
+// =============================================================================
 // VISUAL CONSTANTS - TRON NEON AESTHETIC
 // =============================================================================
 
 // Board/background contrast - Board is lighter to stand out from dark background
-const BOARD_COLOR = 0x12121f; // Lighter gray-blue for better contrast
-const BOARD_EMISSIVE = 0x151525; // Subtle emissive to lift the surface
-const GRID_COLOR = 0x2a2a4a; // Brighter grid lines visible on lighter board
-const WALL_COLOR = 0x3a3a5a; // Walls slightly lighter to frame board
-const WALL_EMISSIVE = 0x5555bb; // Stronger wall glow
+// Overall lighting brightness adjustment - board colors lifted for cleaner look
+const BOARD_COLOR = 0x1a1a2a; // Medium gray-blue - clearly readable
+const BOARD_EMISSIVE = 0x1a1a30; // Subtle self-illumination
+const GRID_COLOR = 0x3a3a5a; // Brighter grid lines for visibility
+const WALL_COLOR = 0x4a4a6a; // Lighter frame color
+const WALL_EMISSIVE = 0x6666cc; // Stronger glow for borders
 
 // Player 1: Cyan / Electric Blue
 const P1_COLOR = 0x00ffff;
 const P1_EMISSIVE = 0x00ccff;
 const P1_TRAIL_COLOR = 0x00ddff;
-const P1_DARK = 0x003344;
+// Bike material contrast - lighter gray base for visibility against board
+const P1_DARK = 0x556677; // Medium-light gray with cool tint
 
 // Player 2: Orange / Hot Magenta
 const P2_COLOR = 0xff6600;
 const P2_EMISSIVE = 0xff4400;
 const P2_TRAIL_COLOR = 0xff5500;
-const P2_DARK = 0x442200;
+// Bike material contrast - lighter gray base for visibility against board
+const P2_DARK = 0x665544; // Medium-light gray with warm tint
 
 // Geometry sizes
 // Bike scale tweak - bikes are prominently larger than trails
 const BIKE_SCALE = 3.5;
 // Note: Trail dimensions are defined in  the TRAIL SEGMENTS section
 
-// Background - kept darker for contrast with lighter board
-const BG_COLOR = 0x010108;
-const HORIZON_GRID_COLOR = 0x151530; // Slightly darker to not compete with board
-const STAR_COUNT = 800;
+// Background (digital void) visibility - visible but darker than board
+const BG_COLOR = 0x080812; // Lifted from pure black so void is visible
+const HORIZON_GRID_COLOR = 0x1a1a40; // Slightly brighter for visibility
+const STAR_COUNT = 1200; // More stars for visible digital void
 
 // =============================================================================
 // STATE
@@ -75,6 +86,44 @@ let arenaGroup;
 let backgroundGroup; // Background elements
 let starField; // Starfield points
 
+// Pedestal: placement + visibility - board surface Y coordinate
+// Used for positioning trails and bikes above the raised board
+const BOARD_SURFACE_Y = 0.5; // Board thickness, top surface is at this Y
+
+// =============================================================================
+// COUNTDOWN DROP-IN ANIMATION STATE
+// Bikes descend from above during countdown phase
+// =============================================================================
+const DROP_START_Y = BOARD_SURFACE_Y + 15; // Start position (high above board)
+const DROP_REST_Y = BOARD_SURFACE_Y; // Landing position (board surface)
+const DROP_DURATION_MS = 800; // Quick drop when game starts (not during countdown)
+
+// Animation state per player
+let dropAnimation = {
+  active: false,
+  startTime: 0,
+  // Track previous status to detect transitions
+  previousStatus: "waiting",
+  // DEBUG: For logging animation progress
+  lastLoggedProgress: -1,
+};
+
+// Landing glow meshes (optional visual effect)
+let landingGlows = {};
+
+// =============================================================================
+// TRON-STYLE EXPLOSION STATE
+// Energy discharge effect when a player dies
+// =============================================================================
+let activeExplosions = []; // Array of active explosion objects
+
+// =============================================================================
+// BACKGROUND MUSIC STATE
+// =============================================================================
+let bgm = null; // Audio element (created on first user interaction)
+let musicEnabled = false; // Current playback state
+let musicInitialized = false; // Has user enabled music at least once?
+
 // =============================================================================
 // DOM ELEMENTS
 // =============================================================================
@@ -94,6 +143,9 @@ const countdownOverlay = document.getElementById("countdown-overlay");
 const countdownText = document.getElementById("countdown-text");
 const gameoverOverlay = document.getElementById("gameover-overlay");
 const winnerText = document.getElementById("winner-text");
+const musicToggle = document.getElementById("music-toggle");
+const musicIcon = document.getElementById("music-icon");
+const musicLabel = document.getElementById("music-label");
 
 // =============================================================================
 // COORDINATE MAPPING
@@ -107,24 +159,168 @@ function gridToWorld(x, y) {
 }
 
 // =============================================================================
+// BACKGROUND MUSIC
+// Handles looping background music with autoplay restriction compliance
+// =============================================================================
+
+/**
+ * Initialize the background music audio element.
+ * Called once on first user interaction to comply with autoplay restrictions.
+ */
+function initBackgroundMusic() {
+  if (bgm) return; // Already initialized
+
+  bgm = new Audio(BGM_PATH);
+  bgm.loop = true;
+  bgm.volume = BGM_VOLUME;
+  bgm.preload = "auto";
+
+  // Handle loading errors gracefully
+  bgm.addEventListener("error", (e) => {
+    console.warn("Background music failed to load:", e);
+  });
+
+  // Log when ready to play
+  bgm.addEventListener("canplaythrough", () => {
+    console.log("Background music loaded and ready");
+    // If music should be playing, start it now that it's loaded
+    if (musicEnabled && bgm.paused) {
+      bgm.play().catch(() => {});
+    }
+  });
+
+  musicInitialized = true;
+  console.log("Background music initialized, loading...");
+}
+
+/**
+ * Start playing background music.
+ * Handles play() promise rejection gracefully.
+ */
+function startMusic() {
+  if (!bgm) {
+    initBackgroundMusic();
+  }
+
+  if (!bgm) return;
+
+  // Try to play immediately
+  const playPromise = bgm.play();
+  if (playPromise !== undefined) {
+    playPromise
+      .then(() => {
+        console.log("Music started playing");
+      })
+      .catch((err) => {
+        console.log("Music playback issue:", err.message);
+      });
+  }
+}
+
+/**
+ * Stop/pause background music.
+ */
+function stopMusic() {
+  if (!bgm) return;
+  bgm.pause();
+  console.log("Music paused");
+}
+
+/**
+ * Toggle music on/off. Initializes audio on first enable.
+ */
+function toggleMusic() {
+  musicEnabled = !musicEnabled;
+
+  // Update UI immediately
+  updateMusicUI();
+
+  // Start or stop playback
+  if (musicEnabled) {
+    startMusic();
+  } else {
+    stopMusic();
+  }
+
+  // Persist preference
+  localStorage.setItem(BGM_STORAGE_KEY, musicEnabled ? "true" : "false");
+}
+
+/**
+ * Update the music toggle button UI to reflect current state.
+ */
+function updateMusicUI() {
+  if (!musicToggle) return;
+
+  if (musicEnabled) {
+    musicToggle.classList.add("playing");
+    musicIcon.textContent = "🔊";
+  } else {
+    musicToggle.classList.remove("playing");
+    musicIcon.textContent = "🔇";
+  }
+}
+
+/**
+ * Load music preference from localStorage and update UI.
+ * Does NOT auto-start playback (requires user gesture).
+ */
+function loadMusicPreference() {
+  const stored = localStorage.getItem(BGM_STORAGE_KEY);
+  if (stored === "true") {
+    // Show UI as enabled, but actual playback starts on first interaction
+    musicEnabled = true;
+    updateMusicUI();
+  }
+}
+
+// Setup music toggle button click handler
+if (musicToggle) {
+  musicToggle.addEventListener("click", toggleMusic);
+}
+
+// Load preference on startup (UI only, no autoplay)
+loadMusicPreference();
+
+// Start music on first user interaction anywhere if preference was enabled
+document.addEventListener(
+  "click",
+  function startMusicOnFirstClick() {
+    if (musicEnabled && !musicInitialized) {
+      startMusic();
+    }
+    // Remove this listener after first click
+    document.removeEventListener("click", startMusicOnFirstClick);
+  },
+  { once: true }
+);
+
+// =============================================================================
 // THREE.JS SETUP
 // =============================================================================
 
 function initThree() {
   scene = new THREE.Scene();
   scene.background = new THREE.Color(BG_COLOR);
-  scene.fog = new THREE.FogExp2(BG_COLOR, 0.008);
+  // Depth separation (fog/exposure) - very light fog preserves background visibility
+  // Fog density reduced so city buildings remain visible at distance
+  scene.fog = new THREE.FogExp2(BG_COLOR, 0.002);
 
   clock = new THREE.Clock();
 
-  // Camera
+  // =========================================================================
+  // Camera framing adjustment - Full board visible with negative space
+  // Farther back and higher to create an observational, exhibition-like feel
+  // The entire board is fully visible at all times with surrounding space
+  // =========================================================================
   camera = new THREE.PerspectiveCamera(
-    45,
+    48, // Moderate FOV avoids distortion while showing full board
     window.innerWidth / window.innerHeight,
     0.1,
     1000
   );
-  camera.position.set(0, 55, 45);
+  // Pulled far back: full board visible with comfortable negative space around it
+  camera.position.set(0, 95, 85);
   camera.lookAt(0, 0, 0);
 
   // Renderer
@@ -135,23 +331,77 @@ function initThree() {
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.0;
+  // Depth separation (fog/exposure) - increased exposure for readable scene
+  // Higher exposure ensures pedestal and buildings are visible
+  renderer.toneMappingExposure = 1.6;
   document.body.insertBefore(renderer.domElement, document.body.firstChild);
 
   // =========================================================================
-  // LIGHTING
+  // LIGHTING - Rebalanced for brightness and readability
+  // Goal: Futuristic, clean, luminous - clearly readable board and pedestal
   // =========================================================================
 
-  ambientLight = new THREE.AmbientLight(0x1a1a3a, 0.25);
+  // Ambient light rebalance - significantly lifted to illuminate entire scene
+  // Bright cool tone for clean futuristic feel
+  ambientLight = new THREE.AmbientLight(0x6677aa, 0.75);
   scene.add(ambientLight);
 
-  mainLight = new THREE.DirectionalLight(0x6666aa, 0.7);
-  mainLight.position.set(0, 80, 20);
+  // Hemisphere light - soft sky/ground fill for natural depth
+  // Sky color (top) is brighter, ground color (bottom) illuminates pedestal
+  const hemiLight = new THREE.HemisphereLight(0x8899cc, 0x334466, 0.6);
+  hemiLight.position.set(0, 50, 0);
+  scene.add(hemiLight);
+
+  // Key light tuning - main directional light for board illumination
+  // Brighter and positioned for even board coverage
+  mainLight = new THREE.DirectionalLight(0xaabbdd, 1.4);
+  mainLight.position.set(0, 100, 30);
   scene.add(mainLight);
 
-  const fillLight = new THREE.DirectionalLight(0x2222aa, 0.15);
-  fillLight.position.set(0, -20, 0);
+  // Secondary fill light - lifts shadows, illuminates pedestal from below
+  const fillLight = new THREE.DirectionalLight(0x5577bb, 0.5);
+  fillLight.position.set(0, -30, 0);
   scene.add(fillLight);
+
+  // Overhead accent light - clean highlight on board center
+  const overheadLight = new THREE.DirectionalLight(0xccddee, 0.5);
+  overheadLight.position.set(0, 120, -20);
+  scene.add(overheadLight);
+
+  // =========================================================================
+  // Pedestal: reveal light - dedicated lighting to make pedestal visible
+  // Multiple lights from different angles create rim/edge highlights
+  // =========================================================================
+
+  // Primary pedestal light - from below/side to illuminate the tapered body
+  const pedestalLight = new THREE.PointLight(0x7799cc, 2.5, 80);
+  pedestalLight.position.set(0, -15, 25);
+  scene.add(pedestalLight);
+
+  // Secondary pedestal rim light - creates edge highlight from opposite side
+  const pedestalRimLight = new THREE.PointLight(0x5588bb, 2.0, 70);
+  pedestalRimLight.position.set(15, -10, -20);
+  scene.add(pedestalRimLight);
+
+  // Third pedestal light - fills from the other side
+  const pedestalFillLight = new THREE.PointLight(0x6688aa, 1.5, 60);
+  pedestalFillLight.position.set(-15, -12, 0);
+  scene.add(pedestalFillLight);
+
+  // =========================================================================
+  // Background city: visibility tuning - dedicated light for buildings
+  // Low intensity directional light aimed at the background perimeter
+  // =========================================================================
+
+  // Background fill light - illuminates distant buildings
+  const bgLight = new THREE.DirectionalLight(0x334466, 0.8);
+  bgLight.position.set(0, 30, 150);
+  scene.add(bgLight);
+
+  // Opposite side background light
+  const bgLight2 = new THREE.DirectionalLight(0x334455, 0.6);
+  bgLight2.position.set(0, 20, -150);
+  scene.add(bgLight2);
 
   // =========================================================================
   // CREATE BACKGROUND FIRST (behind everything)
@@ -178,31 +428,30 @@ function createBackground() {
 
   // =========================================================================
   // OPTION A: INFINITE HORIZON GRID
-  // Large plane below arena with fading grid lines
-  // Board/background contrast - Horizon kept darker to make board stand out
+  // Background (digital void) visibility - visible horizon grid below
   // =========================================================================
 
   const horizonSize = 400;
-  const horizonY = -5; // Below the arena
+  const horizonY = -8; // Lower to not compete with pedestal
 
-  // Dark horizon plane - darker than board for contrast
+  // Horizon plane - subtle but visible
   const horizonGeom = new THREE.PlaneGeometry(horizonSize, horizonSize);
   const horizonMat = new THREE.MeshBasicMaterial({
-    color: 0x010108, // Very dark, matches BG_COLOR
+    color: 0x0a0a18, // Slightly lighter so it's visible
     transparent: true,
-    opacity: 0.9,
+    opacity: 0.8,
   });
   const horizonPlane = new THREE.Mesh(horizonGeom, horizonMat);
   horizonPlane.rotation.x = -Math.PI / 2;
   horizonPlane.position.y = horizonY;
   backgroundGroup.add(horizonPlane);
 
-  // Grid lines on horizon (subtle, doesn't compete with board)
+  // Grid lines on horizon - brighter for visible digital void effect
   const gridSpacing = 10;
   const gridLineMat = new THREE.LineBasicMaterial({
     color: HORIZON_GRID_COLOR,
     transparent: true,
-    opacity: 0.2, // Reduced opacity so board grid is more prominent
+    opacity: 0.35, // More visible grid
   });
 
   // Create grid lines
@@ -228,34 +477,48 @@ function createBackground() {
 
   // =========================================================================
   // OPTION B: ABSTRACT CITY SILHOUETTES
-  // Low-detail buildings in far background
-  // Board/background contrast - Buildings darker to not compete with arena
+  // Background city: visibility tuning - visible building shapes with emissive edges
   // =========================================================================
 
-  const buildingMat = new THREE.MeshBasicMaterial({
-    color: 0x060610, // Darker buildings
-    transparent: true,
-    opacity: 0.5, // More transparent
+  // Background city: visibility tuning - buildings use StandardMaterial for lighting
+  const buildingMat = new THREE.MeshStandardMaterial({
+    color: 0x181828, // Dark blue-gray body
+    emissive: 0x0a0a18, // Subtle self-illumination
+    emissiveIntensity: 0.3,
+    roughness: 0.8,
+    metalness: 0.2,
   });
 
-  const buildingEdgeMat = new THREE.MeshBasicMaterial({
-    color: 0x1a1a66, // Subtler edge glow
-    transparent: true,
-    opacity: 0.2, // Reduced edge visibility
+  // Background city: visibility tuning - STRONG emissive edges for silhouette
+  const buildingEdgeMat = new THREE.MeshStandardMaterial({
+    color: 0x2244aa,
+    emissive: 0x4466dd, // Strong blue glow for edge visibility
+    emissiveIntensity: 1.2, // High intensity so edges are clearly visible
+    roughness: 0.2,
+    metalness: 0.5,
   });
 
-  // Create buildings around the perimeter
+  // Background city: visibility tuning - window accent material
+  const windowMat = new THREE.MeshStandardMaterial({
+    color: 0x3355bb,
+    emissive: 0x4477cc, // Glowing windows
+    emissiveIntensity: 0.8,
+    roughness: 0.3,
+    metalness: 0.4,
+  });
+
+  // Create buildings around the perimeter - closer and more visible
   const buildingConfigs = [];
-  const buildingDistance = 120;
+  const buildingDistance = 90; // Moved closer for better visibility
 
-  // Generate random building positions around the arena
-  for (let angle = 0; angle < Math.PI * 2; angle += 0.15) {
-    const dist = buildingDistance + Math.random() * 60;
+  // Background city: visibility tuning - more buildings at denser intervals
+  for (let angle = 0; angle < Math.PI * 2; angle += 0.12) {
+    const dist = buildingDistance + Math.random() * 50;
     const x = Math.cos(angle) * dist;
     const z = Math.sin(angle) * dist;
-    const width = 3 + Math.random() * 8;
-    const height = 10 + Math.random() * 40;
-    const depth = 3 + Math.random() * 8;
+    const width = 4 + Math.random() * 10;
+    const height = 15 + Math.random() * 50; // Taller buildings
+    const depth = 4 + Math.random() * 10;
     buildingConfigs.push({ x, z, width, height, depth });
   }
 
@@ -269,15 +532,46 @@ function createBackground() {
     building.position.set(cfg.x, cfg.height / 2 + horizonY, cfg.z);
     backgroundGroup.add(building);
 
-    // Add subtle edge glow (top edge)
+    // Background city: visibility tuning - bright top edge glow
     const edgeGeom = new THREE.BoxGeometry(
-      cfg.width + 0.2,
-      0.3,
-      cfg.depth + 0.2
+      cfg.width + 0.4,
+      0.5,
+      cfg.depth + 0.4
     );
     const edge = new THREE.Mesh(edgeGeom, buildingEdgeMat);
-    edge.position.set(cfg.x, cfg.height + horizonY, cfg.z);
+    edge.position.set(cfg.x, cfg.height + horizonY + 0.25, cfg.z);
     backgroundGroup.add(edge);
+
+    // Background city: visibility tuning - vertical edge strips on corners
+    const stripHeight = cfg.height * 0.8;
+    const stripGeom = new THREE.BoxGeometry(0.3, stripHeight, 0.3);
+    const cornerOffsets = [
+      [cfg.width / 2, cfg.depth / 2],
+      [-cfg.width / 2, cfg.depth / 2],
+      [cfg.width / 2, -cfg.depth / 2],
+      [-cfg.width / 2, -cfg.depth / 2],
+    ];
+    cornerOffsets.forEach(([ox, oz]) => {
+      const strip = new THREE.Mesh(stripGeom, buildingEdgeMat);
+      strip.position.set(
+        cfg.x + ox,
+        stripHeight / 2 + horizonY + cfg.height * 0.1,
+        cfg.z + oz
+      );
+      backgroundGroup.add(strip);
+    });
+
+    // Background city: visibility tuning - random window rows (emissive accents)
+    if (Math.random() > 0.4) {
+      const windowRows = Math.floor(2 + Math.random() * 4);
+      for (let row = 0; row < windowRows; row++) {
+        const windowY = horizonY + 5 + row * (cfg.height / windowRows) * 0.7;
+        const windowGeom = new THREE.BoxGeometry(cfg.width * 0.6, 0.8, 0.2);
+        const windowMesh = new THREE.Mesh(windowGeom, windowMat);
+        windowMesh.position.set(cfg.x, windowY, cfg.z + cfg.depth / 2 + 0.1);
+        backgroundGroup.add(windowMesh);
+      }
+    }
   });
 
   // =========================================================================
@@ -299,23 +593,23 @@ function createBackground() {
     starPositions[i * 3 + 1] = radius * Math.cos(phi) + 20; // Above scene
     starPositions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
 
-    // Vary star colors (blues and purples)
+    // Background (digital void) visibility - brighter star colors
     const colorChoice = Math.random();
     if (colorChoice < 0.5) {
-      // Blue
-      starColors[i * 3] = 0.3 + Math.random() * 0.3;
+      // Blue - brighter
+      starColors[i * 3] = 0.4 + Math.random() * 0.4;
+      starColors[i * 3 + 1] = 0.5 + Math.random() * 0.4;
+      starColors[i * 3 + 2] = 0.9 + Math.random() * 0.1;
+    } else if (colorChoice < 0.8) {
+      // Cyan - brighter
+      starColors[i * 3] = 0.3 + Math.random() * 0.4;
+      starColors[i * 3 + 1] = 0.8 + Math.random() * 0.2;
+      starColors[i * 3 + 2] = 0.9 + Math.random() * 0.1;
+    } else {
+      // Purple/Magenta - brighter
+      starColors[i * 3] = 0.6 + Math.random() * 0.4;
       starColors[i * 3 + 1] = 0.3 + Math.random() * 0.3;
       starColors[i * 3 + 2] = 0.8 + Math.random() * 0.2;
-    } else if (colorChoice < 0.8) {
-      // Cyan
-      starColors[i * 3] = 0.2 + Math.random() * 0.3;
-      starColors[i * 3 + 1] = 0.7 + Math.random() * 0.3;
-      starColors[i * 3 + 2] = 0.8 + Math.random() * 0.2;
-    } else {
-      // Purple
-      starColors[i * 3] = 0.5 + Math.random() * 0.3;
-      starColors[i * 3 + 1] = 0.2 + Math.random() * 0.2;
-      starColors[i * 3 + 2] = 0.7 + Math.random() * 0.3;
     }
   }
 
@@ -325,11 +619,12 @@ function createBackground() {
   );
   starGeometry.setAttribute("color", new THREE.BufferAttribute(starColors, 3));
 
+  // Background (digital void) visibility - brighter, larger stars
   const starMat = new THREE.PointsMaterial({
-    size: 1.5,
+    size: 2.5, // Larger stars for visibility
     vertexColors: true,
     transparent: true,
-    opacity: 0.7,
+    opacity: 0.9, // More opaque
     sizeAttenuation: true,
   });
 
@@ -352,30 +647,38 @@ function createBoard() {
   arenaGroup.name = "arena";
 
   // Board/background contrast - Board surface made lighter and more reflective
-  // to clearly distinguish it from the darker background environment
-  const boardGeom = new THREE.BoxGeometry(gridSize.w, 0.3, gridSize.h);
+  // Pedestal: placement + visibility - board raised so pedestal is visible beneath
+  const boardThickness = 0.5; // Thicker board for visual presence
+  const boardGeom = new THREE.BoxGeometry(
+    gridSize.w,
+    boardThickness,
+    gridSize.h
+  );
   const boardMat = new THREE.MeshStandardMaterial({
     color: BOARD_COLOR,
     emissive: BOARD_EMISSIVE,
-    emissiveIntensity: 0.15, // Slightly stronger emissive
-    roughness: 0.7, // Less rough = more reflective surface
-    metalness: 0.5, // More metallic for better light response
+    emissiveIntensity: 0.25, // Slightly brighter self-illumination
+    roughness: 0.5, // Receives light evenly
+    metalness: 0.35,
   });
   const board = new THREE.Mesh(boardGeom, boardMat);
-  board.position.y = -0.15;
+  // Pedestal: placement + visibility - board positioned higher to reveal pedestal
+  board.position.y = boardThickness / 2; // Board sits at y=0 to y=0.5
   arenaGroup.add(board);
 
-  // Grid lines - brighter to remain visible on lighter board
+  // Grid lines - clearly visible against board surface
+  // Pedestal: placement + visibility - grid lines raised to match new board top
+  const boardTopY = boardThickness; // Board top surface Y coordinate
   const gridMat = new THREE.LineBasicMaterial({
     color: GRID_COLOR,
     transparent: true,
-    opacity: 0.5, // Increased opacity for visibility
+    opacity: 0.6, // Good visibility without overpowering
   });
 
   for (let i = 0; i <= gridSize.h; i += 5) {
     const points = [
-      new THREE.Vector3(-gridSize.w / 2, 0.02, i - gridSize.h / 2),
-      new THREE.Vector3(gridSize.w / 2, 0.02, i - gridSize.h / 2),
+      new THREE.Vector3(-gridSize.w / 2, boardTopY + 0.02, i - gridSize.h / 2),
+      new THREE.Vector3(gridSize.w / 2, boardTopY + 0.02, i - gridSize.h / 2),
     ];
     const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
     arenaGroup.add(new THREE.Line(lineGeom, gridMat));
@@ -383,65 +686,149 @@ function createBoard() {
 
   for (let i = 0; i <= gridSize.w; i += 5) {
     const points = [
-      new THREE.Vector3(i - gridSize.w / 2, 0.02, -gridSize.h / 2),
-      new THREE.Vector3(i - gridSize.w / 2, 0.02, gridSize.h / 2),
+      new THREE.Vector3(i - gridSize.w / 2, boardTopY + 0.02, -gridSize.h / 2),
+      new THREE.Vector3(i - gridSize.w / 2, boardTopY + 0.02, gridSize.h / 2),
     ];
     const lineGeom = new THREE.BufferGeometry().setFromPoints(points);
     arenaGroup.add(new THREE.Line(lineGeom, gridMat));
   }
 
-  // Walls
-  const wallHeight = 1.5;
-  const wallThickness = 0.15;
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: WALL_COLOR,
-    emissive: WALL_EMISSIVE,
-    emissiveIntensity: 0.6,
-    roughness: 0.3,
-    metalness: 0.7,
-    transparent: true,
-    opacity: 0.7,
+  // =========================================================================
+  // Minimalist glowing board border
+  // Clean, low-profile frame with subtle emissive glow
+  // Does not act as a wall - purely decorative framing element
+  // =========================================================================
+
+  // Border dimensions - thin and low-profile
+  const borderHeight = 0.4;
+  const borderWidth = 0.8;
+  const borderInset = 0.1; // Slight inset from board edge
+
+  // Border material - darker than board with subtle emissive accent
+  const borderMat = new THREE.MeshStandardMaterial({
+    color: 0x0a0a15, // Darker than board surface
+    emissive: 0x2244aa, // Subtle blue glow
+    emissiveIntensity: 0.25, // Restrained - accent only
+    roughness: 0.6,
+    metalness: 0.4,
   });
 
-  const wallConfigs = [
+  // Inner edge glow strip material - slightly brighter accent
+  const edgeGlowMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a2a,
+    emissive: 0x3366cc,
+    emissiveIntensity: 0.4,
+    roughness: 0.3,
+    metalness: 0.5,
+  });
+
+  // Create border segments (4 sides)
+  const hw = gridSize.w / 2;
+  const hh = gridSize.h / 2;
+
+  const borderConfigs = [
+    // Top border (negative Z)
     {
-      w: gridSize.w,
-      h: wallHeight,
-      d: wallThickness,
+      w: gridSize.w + borderWidth * 2,
+      d: borderWidth,
       x: 0,
-      z: -gridSize.h / 2 - wallThickness / 2,
+      z: -hh - borderWidth / 2 + borderInset,
     },
+    // Bottom border (positive Z)
     {
-      w: gridSize.w,
-      h: wallHeight,
-      d: wallThickness,
+      w: gridSize.w + borderWidth * 2,
+      d: borderWidth,
       x: 0,
-      z: gridSize.h / 2 + wallThickness / 2,
+      z: hh + borderWidth / 2 - borderInset,
     },
+    // Left border (negative X)
     {
-      w: wallThickness,
-      h: wallHeight,
-      d: gridSize.h + wallThickness * 2,
-      x: -gridSize.w / 2 - wallThickness / 2,
+      w: borderWidth,
+      d: gridSize.h,
+      x: -hw - borderWidth / 2 + borderInset,
       z: 0,
     },
+    // Right border (positive X)
     {
-      w: wallThickness,
-      h: wallHeight,
-      d: gridSize.h + wallThickness * 2,
-      x: gridSize.w / 2 + wallThickness / 2,
+      w: borderWidth,
+      d: gridSize.h,
+      x: hw + borderWidth / 2 - borderInset,
       z: 0,
     },
   ];
 
-  wallConfigs.forEach((cfg) => {
-    const wallGeom = new THREE.BoxGeometry(cfg.w, cfg.h, cfg.d);
-    const wall = new THREE.Mesh(wallGeom, wallMat);
-    wall.position.set(cfg.x, cfg.h / 2, cfg.z);
-    arenaGroup.add(wall);
+  borderConfigs.forEach((cfg) => {
+    const borderGeom = new THREE.BoxGeometry(cfg.w, borderHeight, cfg.d);
+    const border = new THREE.Mesh(borderGeom, borderMat);
+    // Pedestal: placement + visibility - borders raised to board top
+    border.position.set(cfg.x, boardTopY + borderHeight / 2, cfg.z);
+    arenaGroup.add(border);
   });
 
-  // Corner lights
+  // Inner edge glow strips - thin bright lines along the inner edge of border
+  const stripHeight = 0.15;
+  const stripWidth = 0.12;
+
+  const stripConfigs = [
+    // Top inner edge
+    { w: gridSize.w, d: stripWidth, x: 0, z: -hh + stripWidth / 2 },
+    // Bottom inner edge
+    { w: gridSize.w, d: stripWidth, x: 0, z: hh - stripWidth / 2 },
+    // Left inner edge
+    {
+      w: stripWidth,
+      d: gridSize.h - stripWidth * 2,
+      x: -hw + stripWidth / 2,
+      z: 0,
+    },
+    // Right inner edge
+    {
+      w: stripWidth,
+      d: gridSize.h - stripWidth * 2,
+      x: hw - stripWidth / 2,
+      z: 0,
+    },
+  ];
+
+  stripConfigs.forEach((cfg) => {
+    const stripGeom = new THREE.BoxGeometry(cfg.w, stripHeight, cfg.d);
+    const strip = new THREE.Mesh(stripGeom, edgeGlowMat);
+    // Pedestal: placement + visibility - strips raised to board top
+    strip.position.set(cfg.x, boardTopY + stripHeight / 2 + 0.01, cfg.z);
+    arenaGroup.add(strip);
+  });
+
+  // Corner accent pieces - small glowing details at each corner
+  const cornerSize = 1.2;
+  const cornerHeight = 0.25;
+  const cornerMat = new THREE.MeshStandardMaterial({
+    color: 0x1a1a2a,
+    emissive: 0x4488dd,
+    emissiveIntensity: 0.5,
+    roughness: 0.3,
+    metalness: 0.6,
+  });
+
+  const cornerPositions = [
+    [-hw + cornerSize / 2, -hh + cornerSize / 2],
+    [hw - cornerSize / 2, -hh + cornerSize / 2],
+    [-hw + cornerSize / 2, hh - cornerSize / 2],
+    [hw - cornerSize / 2, hh - cornerSize / 2],
+  ];
+
+  cornerPositions.forEach(([x, z]) => {
+    const cornerGeom = new THREE.BoxGeometry(
+      cornerSize,
+      cornerHeight,
+      cornerSize
+    );
+    const corner = new THREE.Mesh(cornerGeom, cornerMat);
+    // Pedestal: placement + visibility - corners raised to board top
+    corner.position.set(x, boardTopY + cornerHeight / 2 + 0.02, z);
+    arenaGroup.add(corner);
+  });
+
+  // Corner lights - raised to match new board height
   const corners = [
     [-gridSize.w / 2, gridSize.h / 2],
     [gridSize.w / 2, gridSize.h / 2],
@@ -450,11 +837,135 @@ function createBoard() {
   ];
   corners.forEach(([x, z]) => {
     const light = new THREE.PointLight(0x4444ff, 0.5, 15);
-    light.position.set(x, 2, z);
+    light.position.set(x, boardTopY + 2, z);
     arenaGroup.add(light);
   });
 
+  // =========================================================================
+  // Tapered pedestal under board
+  // Creates a physical, grounded feel like an exhibition piece
+  // Only the upper portion is visible; it fades into the dark background below
+  // =========================================================================
+  createPedestal(arenaGroup);
+
   scene.add(arenaGroup);
+}
+
+// =============================================================================
+// TAPERED PEDESTAL UNDER BOARD
+// Creates a grounded, exhibition-piece feel for the tabletop arena
+// =============================================================================
+
+/**
+ * Creates a tapered central pedestal beneath the board.
+ * The pedestal is narrower at the top (where it meets the board),
+ * wider through the midsection, and tapers as it descends.
+ * Only the upper portion is visible from the camera angle.
+ *
+ * @param {THREE.Group} parentGroup - The arena group to add pedestal to
+ */
+function createPedestal(parentGroup) {
+  const pedestalGroup = new THREE.Group();
+  pedestalGroup.name = "pedestal";
+
+  // Pedestal: placement + visibility - clean matte solid color
+  // Simple dark gray-blue, no texture or shine
+  const pedestalMat = new THREE.MeshStandardMaterial({
+    color: 0x252535, // Solid dark gray-blue
+    emissive: 0x000000, // No emissive - clean matte look
+    emissiveIntensity: 0,
+    roughness: 1.0, // Fully matte finish
+    metalness: 0, // No metallic sheen
+  });
+
+  // Pedestal: reveal light - accent ring material with strong emissive glow
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: 0x3a3a5a,
+    emissive: 0x5588ee, // Brighter blue glow
+    emissiveIntensity: 0.9, // Strong glow for rim highlight effect
+    roughness: 0.25,
+    metalness: 0.5,
+  });
+
+  // =========================================================================
+  // Pedestal: placement + visibility - MUCH wider to extend beyond board edges
+  // Board is 80x60, so half-diagonal is ~50. Pedestal neck must be > board half-size
+  // to be visible from the camera angle. Stacked cylinders for tapered look.
+  // =========================================================================
+
+  // Pedestal starts just below board bottom (y = 0)
+  const pedestalTopY = -0.5; // Small gap below board
+
+  // Section 1: Neck - VERY wide so it extends beyond the board footprint
+  // This is the key to visibility - neck radius must exceed board half-dimensions
+  const neckHeight = 6;
+  const neckGeom = new THREE.CylinderGeometry(
+    38, // radiusTop - extends beyond board edge (board is 80x60, half is 40x30)
+    42, // radiusBottom (widens into body)
+    neckHeight,
+    48 // more segments for smooth appearance
+  );
+  const neck = new THREE.Mesh(neckGeom, pedestalMat);
+  neck.position.y = pedestalTopY - neckHeight / 2;
+  pedestalGroup.add(neck);
+
+  // Section 2: Body - widest midsection for visual presence
+  const bodyHeight = 12;
+  const bodyGeom = new THREE.CylinderGeometry(
+    42, // radiusTop (matches neck bottom)
+    48, // radiusBottom (widest point)
+    bodyHeight,
+    48
+  );
+  const body = new THREE.Mesh(bodyGeom, pedestalMat);
+  body.position.y = pedestalTopY - neckHeight - bodyHeight / 2;
+  pedestalGroup.add(body);
+
+  // Section 3: Lower taper - narrows as it descends
+  const lowerHeight = 20;
+  const lowerGeom = new THREE.CylinderGeometry(
+    48, // radiusTop (matches body bottom)
+    30, // radiusBottom (tapers narrower)
+    lowerHeight,
+    48
+  );
+  const lower = new THREE.Mesh(lowerGeom, pedestalMat);
+  lower.position.y = pedestalTopY - neckHeight - bodyHeight - lowerHeight / 2;
+  pedestalGroup.add(lower);
+
+  // Section 4: Deep extension - fades into void
+  const deepHeight = 40;
+  const deepGeom = new THREE.CylinderGeometry(
+    30, // radiusTop
+    15, // radiusBottom (continues narrowing)
+    deepHeight,
+    48
+  );
+  const deep = new THREE.Mesh(deepGeom, pedestalMat);
+  deep.position.y =
+    pedestalTopY - neckHeight - bodyHeight - lowerHeight - deepHeight / 2;
+  pedestalGroup.add(deep);
+
+  // =========================================================================
+  // Pedestal: reveal light - accent rings for futuristic detail and visibility
+  // =========================================================================
+
+  // Top accent ring - bright glow at junction with board (visible edge)
+  const ringHeight = 0.8;
+  const ringGeom = new THREE.CylinderGeometry(39, 39, ringHeight, 48);
+  const ring = new THREE.Mesh(ringGeom, accentMat);
+  ring.position.y = pedestalTopY - ringHeight / 2;
+  pedestalGroup.add(ring);
+
+  // Mid-body accent ring - second glow ring on the visible body section
+  const midRingGeom = new THREE.CylinderGeometry(44, 44, 0.6, 48);
+  const midRing = new THREE.Mesh(midRingGeom, accentMat);
+  midRing.position.y = pedestalTopY - neckHeight - 3;
+  pedestalGroup.add(midRing);
+
+  // Center the pedestal under the board
+  pedestalGroup.position.set(0, 0, 0);
+  parentGroup.add(pedestalGroup);
 }
 
 // =============================================================================
@@ -475,13 +986,15 @@ function createBikeMesh(accentColor, emissiveColor, darkColor) {
 
   // =========================================================================
   // MATERIALS
+  // Bike material contrast + metallic sheen - lighter gray for visibility
   // =========================================================================
 
-  // Dark body material
+  // Body material - medium-light gray with slight metallic sheen
+  // Provides clear contrast against the darker board surface
   const bodyMat = new THREE.MeshStandardMaterial({
     color: darkColor,
-    roughness: 0.4,
-    metalness: 0.8,
+    roughness: 0.55, // Moderate roughness - not too shiny
+    metalness: 0.35, // Low metalness for subtle sheen without reflection
   });
 
   // Glowing accent material
@@ -631,22 +1144,26 @@ function createPlayerBikes() {
   // Player 1 bike (cyan)
   // Bike scale tweak - Bikes are now larger than trails for visual prominence
   playerBikes[1] = createBikeMesh(P1_COLOR, P1_EMISSIVE, P1_DARK);
+  playerBikes[1].userData.wasAlive = undefined; // Initialize for death detection
   playerDirections[1] = "RIGHT";
   scene.add(playerBikes[1]);
 
-  // Player 1 light - raised to match larger bike
+  // Player 1 light - raised to match larger bike and board height
   playerLights[1] = new THREE.PointLight(P1_COLOR, 3, 15);
-  playerLights[1].position.y = 2.5;
+  // Pedestal: placement + visibility - light positioned above raised board surface
+  playerLights[1].position.y = BOARD_SURFACE_Y + 2.5;
   scene.add(playerLights[1]);
 
   // Player 2 bike (orange)
   playerBikes[2] = createBikeMesh(P2_COLOR, P2_EMISSIVE, P2_DARK);
+  playerBikes[2].userData.wasAlive = undefined; // Initialize for death detection
   playerDirections[2] = "LEFT";
   scene.add(playerBikes[2]);
 
-  // Player 2 light - raised to match larger bike
+  // Player 2 light - raised to match larger bike and board height
   playerLights[2] = new THREE.PointLight(P2_COLOR, 3, 15);
-  playerLights[2].position.y = 2.5;
+  // Pedestal: placement + visibility - light positioned above raised board surface
+  playerLights[2].position.y = BOARD_SURFACE_Y + 2.5;
   scene.add(playerLights[2]);
 }
 
@@ -662,23 +1179,23 @@ function createPlayerBikes() {
 let trailMaterials = {};
 
 // Trail geometry constants for continuity effect
-const TRAIL_WIDTH = 0.5; // Thinner than bike footprint
-const TRAIL_LENGTH = 1.08; // Slightly > 1.0 to overlap adjacent segments
+const TRAIL_WIDTH = 0.55; // Thinner than bike footprint
+const TRAIL_LENGTH = 1.15; // Overlap adjacent segments more generously
 const TRAIL_HEIGHT_VISUAL = 0.35; // Lower than bikes for visual hierarchy
-const CORNER_SIZE = 0.65; // Square corner pieces to connect turns
+const CORNER_SIZE = 1.0; // Large square corner pieces to fully connect turns
 
 // Cached geometries for horizontal (X-axis), vertical (Z-axis), and corners
 let trailGeomHorizontal = null; // Stretched along X
 let trailGeomVertical = null; // Stretched along Z
 let trailGeomCorner = null; // Square piece for turns
 
-// Track last direction per player to detect turns
+// Track last direction and position per player to detect turns
 let lastTrailDirection = { 1: null, 2: null };
+let lastTrailPosition = { 1: null, 2: null };
 
 function getTrailGeometryHorizontal() {
   if (!trailGeomHorizontal) {
     // Trail continuity: Stretched along X-axis for LEFT/RIGHT movement
-    // Length (X) is 1.08 units to overlap with adjacent segments
     trailGeomHorizontal = new THREE.BoxGeometry(
       TRAIL_LENGTH,
       TRAIL_HEIGHT_VISUAL,
@@ -691,7 +1208,6 @@ function getTrailGeometryHorizontal() {
 function getTrailGeometryVertical() {
   if (!trailGeomVertical) {
     // Trail continuity: Stretched along Z-axis for UP/DOWN movement
-    // Length (Z) is 1.08 units to overlap with adjacent segments
     trailGeomVertical = new THREE.BoxGeometry(
       TRAIL_WIDTH,
       TRAIL_HEIGHT_VISUAL,
@@ -703,8 +1219,8 @@ function getTrailGeometryVertical() {
 
 function getTrailGeometryCorner() {
   if (!trailGeomCorner) {
-    // Corner piece: Square geometry to fill gaps at turns
-    // Slightly larger than TRAIL_WIDTH to ensure overlap with both directions
+    // Corner piece: Large square geometry to fill gaps at turns
+    // Size matches TRAIL_LENGTH to ensure full overlap with adjacent segments
     trailGeomCorner = new THREE.BoxGeometry(
       CORNER_SIZE,
       TRAIL_HEIGHT_VISUAL,
@@ -740,8 +1256,8 @@ function getTrailMaterial(playerId) {
  * to create visual overlap with adjacent segments, producing the illusion
  * of a continuous light ribbon.
  *
- * At turns (direction changes), a square corner piece is used to ensure
- * visual continuity between horizontal and vertical segments.
+ * At turns (direction changes), BOTH the previous segment AND the new segment
+ * use corner geometry to ensure seamless visual continuity at corners.
  *
  * @param {number} playerId - Player 1 or 2
  * @param {number} x - Grid X coordinate
@@ -765,8 +1281,32 @@ function createTrailSegment(playerId, x, y, direction) {
     lastDir !== null &&
     ((isHorizontal && wasVertical) || (!isHorizontal && wasHorizontal));
 
-  // Update last direction for next segment
+  // When a turn is detected, upgrade the PREVIOUS segment to a corner piece
+  // This ensures both ends of the turn connect seamlessly
+  if (isCorner && lastTrailPosition[playerId]) {
+    const prevKey = lastTrailPosition[playerId];
+    const prevMesh = trailMeshes[playerId].get(prevKey);
+    if (prevMesh && !prevMesh.userData.isCorner) {
+      // Replace previous segment geometry with corner
+      const prevPos = prevMesh.position.clone();
+      scene.remove(prevMesh);
+
+      const cornerMesh = new THREE.Mesh(
+        getTrailGeometryCorner(),
+        getTrailMaterial(playerId)
+      );
+      cornerMesh.position.copy(prevPos);
+      cornerMesh.userData.direction = lastDir;
+      cornerMesh.userData.isCorner = true;
+
+      scene.add(cornerMesh);
+      trailMeshes[playerId].set(prevKey, cornerMesh);
+    }
+  }
+
+  // Update tracking for next segment
   lastTrailDirection[playerId] = dir;
+  lastTrailPosition[playerId] = key;
 
   // Select geometry: corner piece for turns, stretched piece for straight segments
   let geometry;
@@ -782,7 +1322,12 @@ function createTrailSegment(playerId, x, y, direction) {
 
   const mesh = new THREE.Mesh(geometry, getTrailMaterial(playerId));
   const worldPos = gridToWorld(x, y);
-  mesh.position.set(worldPos.x, TRAIL_HEIGHT_VISUAL / 2, worldPos.z);
+  // Pedestal: placement + visibility - trails positioned above raised board surface
+  mesh.position.set(
+    worldPos.x,
+    BOARD_SURFACE_Y + TRAIL_HEIGHT_VISUAL / 2,
+    worldPos.z
+  );
 
   // Store the direction used for this segment (useful for debugging)
   mesh.userData.direction = dir;
@@ -798,8 +1343,403 @@ function clearAllTrails() {
       scene.remove(mesh);
     }
     trailMeshes[playerId].clear();
-    // Reset direction tracking for new round
+    // Reset tracking for new round
     lastTrailDirection[playerId] = null;
+    lastTrailPosition[playerId] = null;
+  }
+}
+
+// =============================================================================
+// TRON-STYLE ENERGY EXPLOSION
+// Visual effect when a player dies - energy discharge, not fire/smoke
+// =============================================================================
+
+/**
+ * Triggers a Tron-style explosion at the specified position
+ * @param {number} playerId - Player ID (1 or 2) for color
+ * @param {number} x - World X position
+ * @param {number} z - World Z position
+ */
+function triggerExplosion(playerId, x, z) {
+  // Tron-style energy explosion
+  console.log(
+    "[Explosion] Player " +
+      playerId +
+      " died at (" +
+      x.toFixed(1) +
+      ", " +
+      z.toFixed(1) +
+      ")"
+  );
+
+  const color = playerId === 1 ? P1_COLOR : P2_COLOR;
+  const emissiveColor = playerId === 1 ? P1_EMISSIVE : P2_EMISSIVE;
+  const y = BOARD_SURFACE_Y + 0.5; // Slightly above board
+  const now = performance.now();
+
+  const explosion = {
+    playerId,
+    startTime: now,
+    objects: [],
+  };
+
+  // 1) CORE FLASH - bright sphere that scales up and fades
+  const coreGeom = new THREE.SphereGeometry(0.3, 16, 16);
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 1.0,
+  });
+  const core = new THREE.Mesh(coreGeom, coreMat);
+  core.position.set(x, y, z);
+  core.userData = { type: "core", duration: 200 };
+  scene.add(core);
+  explosion.objects.push(core);
+
+  // 2) ENERGY RING - expands outward on XZ plane
+  const ringGeom = new THREE.RingGeometry(0.5, 0.8, 32);
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: 0.9,
+    side: THREE.DoubleSide,
+  });
+  const ring = new THREE.Mesh(ringGeom, ringMat);
+  ring.position.set(x, y, z);
+  ring.rotation.x = -Math.PI / 2; // Flat on XZ plane
+  ring.userData = { type: "ring", duration: 400 };
+  scene.add(ring);
+  explosion.objects.push(ring);
+
+  // Secondary ring (slightly delayed feel)
+  const ring2Geom = new THREE.RingGeometry(0.3, 0.5, 32);
+  const ring2Mat = new THREE.MeshBasicMaterial({
+    color: emissiveColor,
+    transparent: true,
+    opacity: 0.7,
+    side: THREE.DoubleSide,
+  });
+  const ring2 = new THREE.Mesh(ring2Geom, ring2Mat);
+  ring2.position.set(x, y + 0.1, z);
+  ring2.rotation.x = -Math.PI / 2;
+  ring2.userData = { type: "ring2", duration: 350 };
+  scene.add(ring2);
+  explosion.objects.push(ring2);
+
+  // 3) SPARKS - points that fly outward
+  const sparkCount = 20;
+  const sparkPositions = new Float32Array(sparkCount * 3);
+  const sparkVelocities = [];
+
+  for (let i = 0; i < sparkCount; i++) {
+    sparkPositions[i * 3] = x;
+    sparkPositions[i * 3 + 1] = y;
+    sparkPositions[i * 3 + 2] = z;
+
+    // Random outward velocity
+    const angle = Math.random() * Math.PI * 2;
+    const speed = 0.02 + Math.random() * 0.03;
+    const upSpeed = 0.01 + Math.random() * 0.02;
+    sparkVelocities.push({
+      vx: Math.cos(angle) * speed,
+      vy: upSpeed,
+      vz: Math.sin(angle) * speed,
+    });
+  }
+
+  const sparkGeom = new THREE.BufferGeometry();
+  sparkGeom.setAttribute(
+    "position",
+    new THREE.BufferAttribute(sparkPositions, 3)
+  );
+
+  const sparkMat = new THREE.PointsMaterial({
+    color: color,
+    size: 0.3,
+    transparent: true,
+    opacity: 1.0,
+  });
+
+  const sparks = new THREE.Points(sparkGeom, sparkMat);
+  sparks.userData = {
+    type: "sparks",
+    duration: 500,
+    velocities: sparkVelocities,
+    basePositions: { x, y, z },
+  };
+  scene.add(sparks);
+  explosion.objects.push(sparks);
+
+  activeExplosions.push(explosion);
+}
+
+/**
+ * Updates all active explosions each frame
+ * @param {number} now - Current time from performance.now()
+ */
+function updateExplosions(now) {
+  // Tron-style energy explosion animation
+  for (let i = activeExplosions.length - 1; i >= 0; i--) {
+    const explosion = activeExplosions[i];
+    const elapsed = now - explosion.startTime;
+    let allComplete = true;
+
+    for (const obj of explosion.objects) {
+      const duration = obj.userData.duration;
+      const progress = Math.min(elapsed / duration, 1);
+
+      if (progress < 1) {
+        allComplete = false;
+      }
+
+      // Ease-out for smooth deceleration
+      const eased = 1 - Math.pow(1 - progress, 3);
+
+      if (obj.userData.type === "core") {
+        // Core: scale up, fade out
+        const scale = 0.3 + eased * 2.5;
+        obj.scale.set(scale, scale, scale);
+        obj.material.opacity = 1 - eased;
+      } else if (
+        obj.userData.type === "ring" ||
+        obj.userData.type === "ring2"
+      ) {
+        // Ring: expand outward, fade out
+        const scale = 1 + eased * 8;
+        obj.scale.set(scale, scale, 1);
+        obj.material.opacity = (1 - eased) * 0.9;
+      } else if (obj.userData.type === "sparks") {
+        // Sparks: move outward, fade out
+        const positions = obj.geometry.attributes.position.array;
+        const vels = obj.userData.velocities;
+        const base = obj.userData.basePositions;
+
+        for (let j = 0; j < vels.length; j++) {
+          const t = elapsed; // Time in ms
+          positions[j * 3] = base.x + vels[j].vx * t;
+          positions[j * 3 + 1] = base.y + vels[j].vy * t - 0.00005 * t * t; // Gravity
+          positions[j * 3 + 2] = base.z + vels[j].vz * t;
+        }
+        obj.geometry.attributes.position.needsUpdate = true;
+        obj.material.opacity = 1 - eased;
+      }
+    }
+
+    // Explosion cleanup - remove completed explosions
+    if (allComplete) {
+      for (const obj of explosion.objects) {
+        scene.remove(obj);
+        if (obj.geometry) obj.geometry.dispose();
+        if (obj.material) obj.material.dispose();
+      }
+      activeExplosions.splice(i, 1);
+      console.log(
+        "[Explosion] Cleanup complete for player " + explosion.playerId
+      );
+    }
+  }
+}
+
+/**
+ * Clears all active explosions immediately (e.g., on new round)
+ */
+function clearAllExplosions() {
+  for (const explosion of activeExplosions) {
+    for (const obj of explosion.objects) {
+      scene.remove(obj);
+      if (obj.geometry) obj.geometry.dispose();
+      if (obj.material) obj.material.dispose();
+    }
+  }
+  activeExplosions = [];
+}
+
+// =============================================================================
+// COUNTDOWN DROP-IN ANIMATION
+// Bikes descend from above during countdown, landing as game starts
+// =============================================================================
+
+/**
+ * Creates landing glow meshes (subtle circles beneath bikes during descent)
+ */
+function createLandingGlows() {
+  const glowMat1 = new THREE.MeshBasicMaterial({
+    color: P1_COLOR,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+  });
+  const glowMat2 = new THREE.MeshBasicMaterial({
+    color: P2_COLOR,
+    transparent: true,
+    opacity: 0,
+    side: THREE.DoubleSide,
+  });
+
+  const glowGeom = new THREE.CircleGeometry(1.5, 32);
+
+  landingGlows[1] = new THREE.Mesh(glowGeom, glowMat1);
+  landingGlows[1].rotation.x = -Math.PI / 2; // Flat on ground
+  landingGlows[1].position.y = BOARD_SURFACE_Y + 0.02; // Just above board
+  landingGlows[1].visible = false;
+  scene.add(landingGlows[1]);
+
+  landingGlows[2] = new THREE.Mesh(glowGeom.clone(), glowMat2);
+  landingGlows[2].rotation.x = -Math.PI / 2;
+  landingGlows[2].position.y = BOARD_SURFACE_Y + 0.02;
+  landingGlows[2].visible = false;
+  scene.add(landingGlows[2]);
+}
+
+/**
+ * Starts the drop-in animation when countdown begins
+ */
+function startDropAnimation() {
+  // FIX: countdown drop-in animation visibility
+  console.log(
+    "[DropAnim] Starting drop-in animation from Y=" +
+      DROP_START_Y +
+      " to Y=" +
+      DROP_REST_Y
+  );
+  dropAnimation.active = true;
+  dropAnimation.startTime = performance.now();
+  dropAnimation.lastLoggedProgress = -1; // Reset progress logging
+
+  // Create landing glows if they don't exist
+  if (!landingGlows[1]) {
+    createLandingGlows();
+  }
+
+  // Immediately position bikes at elevated start height and show landing glows
+  for (const id of [1, 2]) {
+    const bike = playerBikes[id];
+    if (bike) {
+      // Elevate bike to start position for drop animation
+      bike.position.y = DROP_START_Y;
+      // Make bike visible for the animation
+      bike.visible = true;
+      console.log(
+        "[DropAnim] Bike " +
+          id +
+          " at X=" +
+          bike.position.x.toFixed(1) +
+          " Z=" +
+          bike.position.z.toFixed(1) +
+          " elevated to Y=" +
+          DROP_START_Y
+      );
+    }
+    if (landingGlows[id]) {
+      landingGlows[id].visible = true;
+      if (bike) {
+        landingGlows[id].position.x = bike.position.x;
+        landingGlows[id].position.z = bike.position.z;
+      }
+      landingGlows[id].material.opacity = 0;
+    }
+  }
+}
+
+/**
+ * Ends the drop-in animation when game starts running
+ */
+function endDropAnimation() {
+  // FIX: countdown drop-in animation visibility
+  console.log(
+    "[DropAnim] Ending drop-in animation, bikes at rest Y=" + DROP_REST_Y
+  );
+  dropAnimation.active = false;
+
+  // Ensure bikes are at rest position
+  for (const id of [1, 2]) {
+    const bike = playerBikes[id];
+    if (bike) {
+      bike.position.y = DROP_REST_Y;
+    }
+    // Hide landing glows
+    if (landingGlows[id]) {
+      landingGlows[id].visible = false;
+      landingGlows[id].material.opacity = 0;
+    }
+  }
+}
+
+/**
+ * Easing function: ease-out cubic for smooth deceleration
+ * @param {number} t - Progress 0 to 1
+ * @returns {number} - Eased value 0 to 1
+ */
+function easeOutCubic(t) {
+  return 1 - Math.pow(1 - t, 3);
+}
+
+/**
+ * Linear interpolation
+ */
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+/**
+ * Updates the drop animation each frame
+ * @param {number} now - Current time from performance.now()
+ */
+function updateDropAnimation(now) {
+  if (!dropAnimation.active) return;
+
+  const elapsed = now - dropAnimation.startTime;
+  const rawProgress = Math.min(elapsed / DROP_DURATION_MS, 1);
+  const easedProgress = easeOutCubic(rawProgress);
+
+  // Calculate current Y position
+  // DEBUG: prevent Y override during countdown - animation controls Y
+  const currentY = lerp(DROP_START_Y, DROP_REST_Y, easedProgress);
+
+  // Log progress periodically (every 10%)
+  const progressPercent = Math.floor(rawProgress * 10);
+  if (progressPercent !== dropAnimation.lastLoggedProgress) {
+    console.log(
+      "[DropAnim] Progress: " +
+        (rawProgress * 100).toFixed(0) +
+        "%, Y=" +
+        currentY.toFixed(2)
+    );
+    dropAnimation.lastLoggedProgress = progressPercent;
+  }
+
+  // Apply to both bikes (don't check visibility - we control that during countdown)
+  for (const id of [1, 2]) {
+    const bike = playerBikes[id];
+    if (bike) {
+      // Override Y position with animation (X/Z remain server-authoritative)
+      bike.position.y = currentY;
+
+      // Update landing glow
+      if (landingGlows[id]) {
+        // Glow gets brighter as bike approaches
+        const glowIntensity = easedProgress * 0.4; // Max 0.4 opacity
+        landingGlows[id].material.opacity = glowIntensity;
+        landingGlows[id].position.x = bike.position.x;
+        landingGlows[id].position.z = bike.position.z;
+
+        // Scale glow based on proximity (bigger when closer)
+        const scale = 0.5 + easedProgress * 0.5;
+        landingGlows[id].scale.set(scale, scale, 1);
+      }
+    }
+  }
+
+  // Add subtle "settle" bounce at the very end
+  if (rawProgress >= 0.95 && rawProgress < 1) {
+    const bouncePhase = (rawProgress - 0.95) / 0.05; // 0 to 1 in last 5%
+    const bounce = Math.sin(bouncePhase * Math.PI) * 0.08; // Tiny bounce
+    for (const id of [1, 2]) {
+      const bike = playerBikes[id];
+      if (bike) {
+        bike.position.y = DROP_REST_Y - bounce; // Slight overshoot down then up
+      }
+    }
   }
 }
 
@@ -811,6 +1751,19 @@ function animate() {
   requestAnimationFrame(animate);
 
   const elapsed = clock.getElapsedTime();
+  const now = performance.now();
+
+  // =========================================================================
+  // COUNTDOWN DROP-IN ANIMATION
+  // Bikes descend from sky during countdown - updates Y position
+  // =========================================================================
+  updateDropAnimation(now);
+
+  // =========================================================================
+  // TRON-STYLE EXPLOSIONS
+  // Update any active death explosions
+  // =========================================================================
+  updateExplosions(now);
 
   // =========================================================================
   // BIKE VISUAL EFFECTS
@@ -819,9 +1772,14 @@ function animate() {
   for (const id of [1, 2]) {
     const bike = playerBikes[id];
     if (bike && bike.visible) {
-      // Subtle hover bob
-      const bob = Math.sin(elapsed * 4 + id * Math.PI) * 0.02;
-      bike.position.y = bob;
+      // Only apply normal Y positioning if drop animation is not active
+      // During drop animation, Y is controlled by updateDropAnimation()
+      if (!dropAnimation.active) {
+        // Pedestal: placement + visibility - bikes positioned above raised board surface
+        // Subtle hover bob on top of base height
+        const bob = Math.sin(elapsed * 4 + id * Math.PI) * 0.02;
+        bike.position.y = BOARD_SURFACE_Y + bob;
+      }
 
       // Pulse accent glow
       const pulse = 0.8 + Math.sin(elapsed * 5 + id * Math.PI) * 0.4;
@@ -854,19 +1812,22 @@ function animate() {
 
   // =========================================================================
   // GAME STATE VISUAL FEEDBACK
+  // Lighting adjustments scaled for brighter overall scene
   // =========================================================================
 
   if (gameStatus === "gameOver") {
-    if (ambientLight) ambientLight.intensity = 0.12;
-    if (mainLight) mainLight.intensity = 0.35;
-    // Dim background during game over
+    // Dim slightly but remain readable - not overly dark
+    if (ambientLight) ambientLight.intensity = 0.35;
+    if (mainLight) mainLight.intensity = 0.7;
     if (backgroundGroup) backgroundGroup.visible = true;
   } else if (gameStatus === "countdown") {
-    if (ambientLight) ambientLight.intensity = 0.2;
-    if (mainLight) mainLight.intensity = 0.5;
+    // Moderate brightness during countdown
+    if (ambientLight) ambientLight.intensity = 0.45;
+    if (mainLight) mainLight.intensity = 0.9;
   } else if (gameStatus === "running") {
-    if (ambientLight) ambientLight.intensity = 0.25;
-    if (mainLight) mainLight.intensity = 0.7;
+    // Full brightness during gameplay - clean and readable
+    if (ambientLight) ambientLight.intensity = 0.55;
+    if (mainLight) mainLight.intensity = 1.1;
   }
 
   renderer.render(scene, camera);
@@ -985,8 +1946,13 @@ function handleState(msg) {
   if (isNewRound) {
     console.log("New round detected, clearing trails");
     clearAllTrails();
+    clearAllExplosions(); // Cleanup any lingering explosions
+    // Reset wasAlive tracking for new round
+    if (playerBikes[1]) playerBikes[1].userData.wasAlive = undefined;
+    if (playerBikes[2]) playerBikes[2].userData.wasAlive = undefined;
     myReadyState = false;
   }
+
   lastTick = msg.tick;
 
   gameStatusEl.textContent = gameStatus;
@@ -996,18 +1962,81 @@ function handleState(msg) {
     scoreP2.textContent = msg.score[2] || 0;
   }
 
-  // Update bike positions and directions
+  // Update bike positions and directions FIRST (before animation logic)
   for (const p of msg.players || []) {
     if (playerBikes[p.id]) {
       const worldPos = gridToWorld(p.x, p.y);
+
+      // Always update X/Z from server - bike follows its trail on the board
+      // The Y position is animated separately during the drop animation
       playerBikes[p.id].position.x = worldPos.x;
       playerBikes[p.id].position.z = worldPos.z;
-      playerBikes[p.id].visible = p.alive;
+
+      // Explosion trigger on death - detect alive transition
+      const wasAlive = playerBikes[p.id].userData.wasAlive;
+      if (wasAlive === true && p.alive === false) {
+        // Player just died - trigger explosion at their position
+        triggerExplosion(
+          p.id,
+          playerBikes[p.id].position.x,
+          playerBikes[p.id].position.z
+        );
+      }
+      playerBikes[p.id].userData.wasAlive = p.alive;
+
+      // Determine bike visibility based on game state:
+      // - running: visible if alive (or if drop animation is active)
+      // - waiting/ready/countdown/gameOver: hidden (clean presentation)
+      let shouldBeVisible = false;
+      if (gameStatus === "running") {
+        shouldBeVisible = p.alive || dropAnimation.active;
+      }
+      playerBikes[p.id].visible = shouldBeVisible;
 
       updatePlayerDirection(p.id, p.dir);
 
       if (playerLights[p.id]) {
-        playerLights[p.id].visible = p.alive;
+        playerLights[p.id].visible = shouldBeVisible;
+      }
+    }
+  }
+
+  // =========================================================================
+  // COUNTDOWN DROP-IN ANIMATION - Trigger when game starts running
+  // FIX: We start the animation when transitioning TO "running" because
+  // that's when the server sends the correct starting positions.
+  // The bikes have already been positioned above (lines 1734-1736), so
+  // now we elevate them and start the drop animation.
+  // =========================================================================
+  if (
+    gameStatus === "running" &&
+    prevStatus === "countdown" &&
+    !dropAnimation.active
+  ) {
+    console.log(
+      "[State] Game starting - triggering drop animation at correct positions"
+    );
+
+    // Bikes are now at correct X/Z positions from server
+    // Start the drop animation (bikes will be elevated then descend)
+    startDropAnimation();
+  }
+
+  // =========================================================================
+  // GAME OVER CLEANUP - Hide bikes and reset visual state
+  // =========================================================================
+  if (gameStatus === "gameOver") {
+    // End any active animation
+    if (dropAnimation.active) {
+      endDropAnimation();
+    }
+    // Hide bikes on game over for clean presentation
+    for (const id of [1, 2]) {
+      if (playerBikes[id]) {
+        playerBikes[id].visible = false;
+      }
+      if (playerLights[id]) {
+        playerLights[id].visible = false;
       }
     }
   }
@@ -1092,6 +2121,20 @@ function handleCountdown(msg) {
   countdownOverlay.style.display = "block";
   readyPanel.style.display = "none";
 
+  // IMPORTANT: Set gameStatus to "countdown" so that when handleState receives
+  // the first "running" state, prevStatus will be "countdown" and trigger the animation
+  if (gameStatus !== "countdown") {
+    console.log(
+      "[Countdown] Setting gameStatus to 'countdown' (was: " + gameStatus + ")"
+    );
+  }
+  gameStatus = "countdown";
+
+  // NOTE: We do NOT start the drop animation during countdown because
+  // the server hasn't sent the correct starting positions yet.
+  // The drop animation triggers when we first receive "running" state
+  // with actual starting positions (see handleState).
+
   if (msg.secondsLeft > 0) {
     countdownText.textContent = msg.secondsLeft;
   } else {
@@ -1118,6 +2161,18 @@ function setupInputHandlers() {
       send({ type: "start" });
       myReadyState = true;
       startBtn.disabled = true;
+
+      // If user had music enabled (from localStorage), start it on this gesture
+      // This respects autoplay rules - we need a user interaction to start audio
+      if (
+        localStorage.getItem(BGM_STORAGE_KEY) === "true" &&
+        !musicInitialized
+      ) {
+        initBackgroundMusic();
+        musicEnabled = true;
+        updateMusicUI();
+        startMusic();
+      }
     }
   });
 

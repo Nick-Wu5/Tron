@@ -496,3 +496,58 @@ body::before {
   );
   z-index: 999;
 }
+
+/* =============================================================================
+   MUSIC TOGGLE BUTTON
+   ============================================================================= */
+
+#music-toggle {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 200;
+
+  font-family: "Orbitron", sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+
+  background: rgba(10, 10, 30, 0.8);
+  color: #666;
+  border: 1px solid #333;
+  border-radius: 4px;
+  padding: 8px 14px;
+  cursor: pointer;
+
+  display: flex;
+  align-items: center;
+  gap: 6px;
+
+  transition: all 0.3s ease;
+}
+
+#music-toggle:hover {
+  background: rgba(20, 20, 50, 0.9);
+  border-color: #555;
+  color: #888;
+}
+
+#music-toggle.playing {
+  color: #0ff;
+  border-color: rgba(0, 255, 255, 0.4);
+  box-shadow: 0 0 10px rgba(0, 255, 255, 0.2);
+}
+
+#music-toggle.playing:hover {
+  color: #0ff;
+  border-color: rgba(0, 255, 255, 0.6);
+}
+
+#music-icon {
+  font-size: 14px;
+}
+
+#music-label {
+  font-size: 11px;
+}
