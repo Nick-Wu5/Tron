@@ -1,0 +1,12 @@
+{
+  "name": "tron-server",
+  "version": "1.0.0",
+  "description": "Authoritative server for two-player Tron Lightcycles game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0"
+  }
+}

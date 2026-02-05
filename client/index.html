@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TRON Lightcycles</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <!-- Three.js canvas will be appended to body -->
+
+    <!-- Overlay UI -->
+    <div id="overlay">
+      <!-- Connection Screen -->
+      <div id="join-screen" class="screen">
+        <h1 class="title">TRON</h1>
+        <div id="connection-status" class="status connecting">
+          Connecting...
+        </div>
+      </div>
+
+      <!-- Game HUD (shown after joining) -->
+      <div id="game-hud" style="display: none">
+        <!-- Top bar -->
+        <div id="top-bar">
+          <div id="player-info">
+            <span id="player-label">Player ?</span>
+            <span id="game-status">waiting</span>
+          </div>
+          <div id="score-display">
+            <span class="p1-score">P1: <span id="score-p1">0</span></span>
+            <span class="separator">|</span>
+            <span class="p2-score">P2: <span id="score-p2">0</span></span>
+          </div>
+        </div>
+
+        <!-- Ready indicators -->
+        <div id="ready-panel" style="display: none">
+          <div class="ready-status">
+            <span class="p1-ready"
+              >P1: <span id="ready-p1">Not Ready</span></span
+            >
+            <span class="p2-ready"
+              >P2: <span id="ready-p2">Not Ready</span></span
+            >
+          </div>
+          <button id="start-btn" disabled>START</button>
+        </div>
+
+        <!-- Countdown overlay -->
+        <div id="countdown-overlay" style="display: none">
+          <div id="countdown-text">3</div>
+        </div>
+
+        <!-- Game Over overlay -->
+        <div id="gameover-overlay" style="display: none">
+          <div id="winner-text">WINNER</div>
+          <div id="reset-hint">Press R to play again</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Controls hint -->
+    <div id="controls-hint">
+      <span>↑ ↓ ← → or WASD to move</span>
+    </div>
+
+    <script type="module" src="client.js"></script>
+  </body>
+</html>
