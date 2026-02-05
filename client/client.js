@@ -98,6 +98,14 @@ let backgroundGroup; // Background elements
 let starField; // Starfield points
 
 // =============================================================================
+// GAME OVER OVERLAY DELAY
+// GameOver overlay delay to showcase explosion - delay the banner so users see death
+// =============================================================================
+const GAMEOVER_OVERLAY_DELAY_MS = 1000; // 1 second delay before showing winner banner
+let gameOverAtMs = null; // Timestamp when gameOver was first detected
+let pendingGameOverMsg = null; // Store the message to display after delay
+
+// =============================================================================
 // PORTAL STATE
 // Teleportation portals rendered as glowing rings on the board
 // =============================================================================
@@ -1582,8 +1590,17 @@ function triggerExplosion(playerId, x, z) {
     objects: [],
   };
 
-  // 1) CORE FLASH - bright sphere that scales up and fades
-  const coreGeom = new THREE.SphereGeometry(0.3, 16, 16);
+  // ==========================================================================
+  // Explosion tuning: more pronounced
+  // - Core flash: bright and noticeable (250ms)
+  // - Rings: large expansion, longer duration (800ms) for dramatic effect
+  // - Sparks: more particles, longer travel (850ms)
+  // - Total effect: ~850ms so explosion is clearly visible before game over banner
+  // ==========================================================================
+
+  // 1) CORE FLASH - large bright sphere, immediate impact
+  // Explosion tuning: more pronounced - larger starting size
+  const coreGeom = new THREE.SphereGeometry(0.6, 16, 16);
   const coreMat = new THREE.MeshBasicMaterial({
     color: 0xffffff,
     transparent: true,
@@ -1591,42 +1608,63 @@ function triggerExplosion(playerId, x, z) {
   });
   const core = new THREE.Mesh(coreGeom, coreMat);
   core.position.set(x, y, z);
-  core.userData = { type: "core", duration: 200 };
+  // Explosion tuning: more pronounced - longer duration for readability
+  core.userData = { type: "core", duration: 250 };
   scene.add(core);
   explosion.objects.push(core);
 
-  // 2) ENERGY RING - expands outward on XZ plane
-  const ringGeom = new THREE.RingGeometry(0.5, 0.8, 32);
+  // 2) PRIMARY ENERGY RING - large, dramatic expansion
+  // Explosion tuning: more pronounced - thicker ring geometry
+  const ringGeom = new THREE.RingGeometry(0.5, 1.2, 32);
   const ringMat = new THREE.MeshBasicMaterial({
     color: color,
     transparent: true,
-    opacity: 0.9,
+    opacity: 1.0,
     side: THREE.DoubleSide,
   });
   const ring = new THREE.Mesh(ringGeom, ringMat);
   ring.position.set(x, y, z);
   ring.rotation.x = -Math.PI / 2; // Flat on XZ plane
-  ring.userData = { type: "ring", duration: 400 };
+  // Explosion tuning: more pronounced - longer duration (800ms)
+  ring.userData = { type: "ring", duration: 800 };
   scene.add(ring);
   explosion.objects.push(ring);
 
-  // Secondary ring (slightly delayed feel)
-  const ring2Geom = new THREE.RingGeometry(0.3, 0.5, 32);
+  // Secondary ring - emissive accent, slightly faster
+  // Explosion tuning: more pronounced - thicker secondary ring
+  const ring2Geom = new THREE.RingGeometry(0.3, 0.8, 32);
   const ring2Mat = new THREE.MeshBasicMaterial({
     color: emissiveColor,
     transparent: true,
-    opacity: 0.7,
+    opacity: 0.9,
     side: THREE.DoubleSide,
   });
   const ring2 = new THREE.Mesh(ring2Geom, ring2Mat);
-  ring2.position.set(x, y + 0.1, z);
+  ring2.position.set(x, y + 0.2, z);
   ring2.rotation.x = -Math.PI / 2;
-  ring2.userData = { type: "ring2", duration: 350 };
+  // Explosion tuning: more pronounced - duration 700ms
+  ring2.userData = { type: "ring2", duration: 700 };
   scene.add(ring2);
   explosion.objects.push(ring2);
 
-  // 3) SPARKS - points that fly outward
-  const sparkCount = 20;
+  // Tertiary inner ring - bright white/color blend for extra energy
+  const ring3Geom = new THREE.RingGeometry(0.2, 0.5, 32);
+  const ring3Mat = new THREE.MeshBasicMaterial({
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.8,
+    side: THREE.DoubleSide,
+  });
+  const ring3 = new THREE.Mesh(ring3Geom, ring3Mat);
+  ring3.position.set(x, y + 0.1, z);
+  ring3.rotation.x = -Math.PI / 2;
+  ring3.userData = { type: "ring3", duration: 500 };
+  scene.add(ring3);
+  explosion.objects.push(ring3);
+
+  // 3) SPARKS - more particles for energetic dispersal
+  // Explosion tuning: more pronounced - increased spark count
+  const sparkCount = 24;
   const sparkPositions = new Float32Array(sparkCount * 3);
   const sparkVelocities = [];
 
@@ -1635,10 +1673,10 @@ function triggerExplosion(playerId, x, z) {
     sparkPositions[i * 3 + 1] = y;
     sparkPositions[i * 3 + 2] = z;
 
-    // Random outward velocity
+    // Explosion tuning: more pronounced - faster, more varied velocities
     const angle = Math.random() * Math.PI * 2;
-    const speed = 0.02 + Math.random() * 0.03;
-    const upSpeed = 0.01 + Math.random() * 0.02;
+    const speed = 0.02 + Math.random() * 0.04; // Varied speed
+    const upSpeed = 0.005 + Math.random() * 0.015;
     sparkVelocities.push({
       vx: Math.cos(angle) * speed,
       vy: upSpeed,
@@ -1654,7 +1692,7 @@ function triggerExplosion(playerId, x, z) {
 
   const sparkMat = new THREE.PointsMaterial({
     color: color,
-    size: 0.3,
+    size: 0.4, // Larger sparks for visibility
     transparent: true,
     opacity: 1.0,
   });
@@ -1662,7 +1700,8 @@ function triggerExplosion(playerId, x, z) {
   const sparks = new THREE.Points(sparkGeom, sparkMat);
   sparks.userData = {
     type: "sparks",
-    duration: 500,
+    // Explosion tuning: more pronounced - longer duration (850ms)
+    duration: 850,
     velocities: sparkVelocities,
     basePositions: { x, y, z },
   };
@@ -1691,24 +1730,46 @@ function updateExplosions(now) {
         allComplete = false;
       }
 
-      // Ease-out for smooth deceleration
-      const eased = 1 - Math.pow(1 - progress, 3);
+      // =======================================================================
+      // Explosion tuning: more pronounced - animation scaling
+      // - Core: large bright flash with smooth fade
+      // - Rings: dramatic expansion (scale 10-12x) over longer duration
+      // - Sparks: travel farther, fade smoothly
+      // =======================================================================
 
       if (obj.userData.type === "core") {
-        // Core: scale up, fade out
-        const scale = 0.3 + eased * 2.5;
+        // Core: bright flash that expands and fades
+        // Ease-out quart for fast initial expansion
+        const eased = 1 - Math.pow(1 - progress, 4);
+        // Explosion tuning: more pronounced - larger scale (up to 4x)
+        const scale = 0.8 + eased * 3.5;
         obj.scale.set(scale, scale, scale);
-        obj.material.opacity = 1 - eased;
-      } else if (
-        obj.userData.type === "ring" ||
-        obj.userData.type === "ring2"
-      ) {
-        // Ring: expand outward, fade out
-        const scale = 1 + eased * 8;
+        // Fade with slight persistence at start for impact
+        obj.material.opacity = Math.pow(1 - progress, 1.8);
+      } else if (obj.userData.type === "ring") {
+        // Primary ring: large dramatic expansion
+        // Ease-out cubic for smooth, readable expansion
+        const eased = 1 - Math.pow(1 - progress, 3);
+        // Explosion tuning: more pronounced - scale up to 12x for dramatic effect
+        const scale = 1 + eased * 11;
         obj.scale.set(scale, scale, 1);
-        obj.material.opacity = (1 - eased) * 0.9;
+        // Smooth fade that lingers slightly then disappears cleanly
+        obj.material.opacity = Math.pow(1 - progress, 1.2) * 0.95;
+      } else if (obj.userData.type === "ring2") {
+        // Secondary ring: slightly faster, accent color
+        const eased = 1 - Math.pow(1 - progress, 3);
+        // Explosion tuning: more pronounced - scale up to 10x
+        const scale = 1 + eased * 9;
+        obj.scale.set(scale, scale, 1);
+        obj.material.opacity = Math.pow(1 - progress, 1.3) * 0.9;
+      } else if (obj.userData.type === "ring3") {
+        // Tertiary inner ring: fastest, brightest accent
+        const eased = 1 - Math.pow(1 - progress, 4);
+        const scale = 1 + eased * 7;
+        obj.scale.set(scale, scale, 1);
+        obj.material.opacity = Math.pow(1 - progress, 2) * 0.8;
       } else if (obj.userData.type === "sparks") {
-        // Sparks: move outward, fade out
+        // Sparks: travel outward with minimal gravity
         const positions = obj.geometry.attributes.position.array;
         const vels = obj.userData.velocities;
         const base = obj.userData.basePositions;
@@ -1716,11 +1777,13 @@ function updateExplosions(now) {
         for (let j = 0; j < vels.length; j++) {
           const t = elapsed; // Time in ms
           positions[j * 3] = base.x + vels[j].vx * t;
-          positions[j * 3 + 1] = base.y + vels[j].vy * t - 0.00005 * t * t; // Gravity
+          // Very light gravity so sparks float slightly
+          positions[j * 3 + 1] = base.y + vels[j].vy * t - 0.000008 * t * t;
           positions[j * 3 + 2] = base.z + vels[j].vz * t;
         }
         obj.geometry.attributes.position.needsUpdate = true;
-        obj.material.opacity = 1 - eased;
+        // Explosion tuning: more pronounced - smooth fade over longer duration
+        obj.material.opacity = Math.pow(1 - progress, 1.2);
       }
     }
 
@@ -2032,6 +2095,36 @@ function animate() {
   updateExplosions(now);
 
   // =========================================================================
+  // GAMEOVER OVERLAY DELAY
+  // GameOver overlay delay to showcase explosion - show banner after delay
+  // =========================================================================
+  if (gameOverAtMs !== null && pendingGameOverMsg !== null) {
+    const timeSinceGameOver = now - gameOverAtMs;
+    if (timeSinceGameOver >= GAMEOVER_OVERLAY_DELAY_MS) {
+      // Delay elapsed - now show the game over overlay
+      const msg = pendingGameOverMsg;
+      gameoverOverlay.style.display = "block";
+      if (msg.winner === "draw") {
+        winnerText.textContent = "DRAW!";
+        winnerText.className = "draw";
+      } else if (msg.winner === 1) {
+        winnerText.textContent = "PLAYER 1 WINS!";
+        winnerText.className = "p1-win";
+      } else if (msg.winner === 2) {
+        winnerText.textContent = "PLAYER 2 WINS!";
+        winnerText.className = "p2-win";
+      }
+      // Clear pending state so we don't repeat
+      pendingGameOverMsg = null;
+      console.log(
+        "[GameOver] Overlay now displayed after " +
+          timeSinceGameOver.toFixed(0) +
+          "ms delay"
+      );
+    }
+  }
+
+  // =========================================================================
   // PORTAL ANIMATIONS
   // Rotate and pulse portal effects
   // =========================================================================
@@ -2240,6 +2333,9 @@ function handleState(msg) {
     if (playerBikes[1]) playerBikes[1].userData.wasAlive = undefined;
     if (playerBikes[2]) playerBikes[2].userData.wasAlive = undefined;
     myReadyState = false;
+    // GameOver overlay delay to showcase explosion - reset delay state on new round
+    gameOverAtMs = null;
+    pendingGameOverMsg = null;
     // Reset tick offset for new round
     serverTickOffset = now;
   }
@@ -2404,17 +2500,20 @@ function updateUIForStatus(msg) {
       break;
 
     case "gameOver":
-      gameoverOverlay.style.display = "block";
-      if (msg.winner === "draw") {
-        winnerText.textContent = "DRAW!";
-        winnerText.className = "draw";
-      } else if (msg.winner === 1) {
-        winnerText.textContent = "PLAYER 1 WINS!";
-        winnerText.className = "p1-win";
-      } else if (msg.winner === 2) {
-        winnerText.textContent = "PLAYER 2 WINS!";
-        winnerText.className = "p2-win";
+      // GameOver overlay delay to showcase explosion
+      // Don't show overlay immediately - wait for explosion to play
+      if (gameOverAtMs === null) {
+        // First time detecting gameOver - start the delay timer
+        gameOverAtMs = performance.now();
+        pendingGameOverMsg = msg;
+        console.log(
+          "[GameOver] Death detected, delaying overlay by " +
+            GAMEOVER_OVERLAY_DELAY_MS +
+            "ms"
+        );
       }
+      // The actual overlay display is handled in the animate loop
+      // after GAMEOVER_OVERLAY_DELAY_MS has elapsed
       break;
   }
 }
