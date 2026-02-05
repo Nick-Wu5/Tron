@@ -73,6 +73,17 @@ let gameStatus = "waiting";
 let lastTick = -1;
 let myReadyState = false;
 
+// =============================================================================
+// TRAIL FADING STATE
+// Timing synced from server, used for client-side visual fade
+// =============================================================================
+let trailTiming = {
+  tickInterval: 50, // ms per tick (default, updated from server)
+  solidMs: 2000,    // ms segment stays fully visible
+  fadeMs: 1000,     // ms segment takes to fade out
+};
+let serverTickOffset = 0; // performance.now() at tick 0 (for local time sync)
+
 // Three.js objects
 let scene, camera, renderer, clock;
 let playerBikes = {}; // Lightcycle meshes per player
@@ -1230,28 +1241,36 @@ function getTrailGeometryCorner() {
   return trailGeomCorner;
 }
 
-function getTrailMaterial(playerId) {
-  if (!trailMaterials[playerId]) {
-    const color = playerId === 1 ? P1_TRAIL_COLOR : P2_TRAIL_COLOR;
-    const emissive = playerId === 1 ? P1_EMISSIVE : P2_EMISSIVE;
+/**
+ * Creates a NEW trail material for each segment (required for per-segment opacity fade).
+ * Each segment needs its own material instance to support independent opacity animation.
+ * @param {number} playerId - Player 1 or 2
+ * @returns {THREE.MeshStandardMaterial} - New material instance
+ */
+function createTrailMaterial(playerId) {
+  const color = playerId === 1 ? P1_TRAIL_COLOR : P2_TRAIL_COLOR;
+  const emissive = playerId === 1 ? P1_EMISSIVE : P2_EMISSIVE;
 
-    // Emissive continuity: Strong glow with low roughness makes segment
-    // boundaries less visible, reinforcing the continuous ribbon effect
-    trailMaterials[playerId] = new THREE.MeshStandardMaterial({
-      color: color,
-      emissive: emissive,
-      emissiveIntensity: 0.85, // Higher emissive for stronger glow
-      roughness: 0.15, // Lower roughness for even light distribution
-      metalness: 0.7,
-      transparent: true,
-      opacity: 0.92, // Slight transparency helps blend segment edges
-    });
-  }
-  return trailMaterials[playerId];
+  // Emissive continuity: Strong glow with low roughness makes segment
+  // boundaries less visible, reinforcing the continuous ribbon effect
+  return new THREE.MeshStandardMaterial({
+    color: color,
+    emissive: emissive,
+    emissiveIntensity: 0.85, // Higher emissive for stronger glow
+    roughness: 0.15, // Lower roughness for even light distribution
+    metalness: 0.7,
+    transparent: true,
+    opacity: 0.92, // Starting opacity (will fade over time)
+  });
+}
+
+// Legacy function for compatibility - now just creates new material
+function getTrailMaterial(playerId) {
+  return createTrailMaterial(playerId);
 }
 
 /**
- * Creates a trail segment with orientation-aware stretching.
+ * Creates a trail segment with orientation-aware stretching and fade timing.
  * The segment is stretched along the player's current movement direction
  * to create visual overlap with adjacent segments, producing the illusion
  * of a continuous light ribbon.
@@ -1259,12 +1278,15 @@ function getTrailMaterial(playerId) {
  * At turns (direction changes), BOTH the previous segment AND the new segment
  * use corner geometry to ensure seamless visual continuity at corners.
  *
+ * Each segment stores its spawnTime for per-segment opacity fade animation.
+ *
  * @param {number} playerId - Player 1 or 2
  * @param {number} x - Grid X coordinate
  * @param {number} y - Grid Y coordinate
  * @param {string} [direction] - Optional direction override (UP/DOWN/LEFT/RIGHT)
+ * @param {number} [spawnTick] - Server tick when segment was created (for fade sync)
  */
-function createTrailSegment(playerId, x, y, direction) {
+function createTrailSegment(playerId, x, y, direction, spawnTick) {
   const key = `${x},${y}`;
   if (trailMeshes[playerId].has(key)) return;
 
@@ -1287,17 +1309,19 @@ function createTrailSegment(playerId, x, y, direction) {
     const prevKey = lastTrailPosition[playerId];
     const prevMesh = trailMeshes[playerId].get(prevKey);
     if (prevMesh && !prevMesh.userData.isCorner) {
-      // Replace previous segment geometry with corner
+      // Replace previous segment geometry with corner, preserving spawnTime
       const prevPos = prevMesh.position.clone();
+      const prevSpawnTime = prevMesh.userData.spawnTime;
       scene.remove(prevMesh);
+      if (prevMesh.material) prevMesh.material.dispose();
 
-      const cornerMesh = new THREE.Mesh(
-        getTrailGeometryCorner(),
-        getTrailMaterial(playerId)
-      );
+      const cornerMat = createTrailMaterial(playerId);
+      const cornerMesh = new THREE.Mesh(getTrailGeometryCorner(), cornerMat);
       cornerMesh.position.copy(prevPos);
       cornerMesh.userData.direction = lastDir;
       cornerMesh.userData.isCorner = true;
+      cornerMesh.userData.spawnTime = prevSpawnTime; // Preserve fade timing
+      cornerMesh.userData.playerId = playerId;
 
       scene.add(cornerMesh);
       trailMeshes[playerId].set(prevKey, cornerMesh);
@@ -1320,7 +1344,9 @@ function createTrailSegment(playerId, x, y, direction) {
       : getTrailGeometryVertical();
   }
 
-  const mesh = new THREE.Mesh(geometry, getTrailMaterial(playerId));
+  // Create mesh with its own material instance for independent opacity fade
+  const material = createTrailMaterial(playerId);
+  const mesh = new THREE.Mesh(geometry, material);
   const worldPos = gridToWorld(x, y);
   // Pedestal: placement + visibility - trails positioned above raised board surface
   mesh.position.set(
@@ -1329,18 +1355,37 @@ function createTrailSegment(playerId, x, y, direction) {
     worldPos.z
   );
 
-  // Store the direction used for this segment (useful for debugging)
+  // Store the direction and spawn time for fade animation
   mesh.userData.direction = dir;
   mesh.userData.isCorner = isCorner;
+  mesh.userData.playerId = playerId;
+  
+  // Calculate spawn time from server tick (or use current time if not provided)
+  // This keeps fade timing synchronized with server's trail expiration
+  if (spawnTick !== undefined && serverTickOffset > 0) {
+    // Convert server tick to local time
+    mesh.userData.spawnTime = serverTickOffset + (spawnTick * trailTiming.tickInterval);
+  } else {
+    // Fallback: use current time (for segments created before sync established)
+    mesh.userData.spawnTime = performance.now();
+  }
 
   scene.add(mesh);
   trailMeshes[playerId].set(key, mesh);
 }
 
+/**
+ * Removes all trail meshes and disposes their materials.
+ * Called on new round to ensure clean slate.
+ */
 function clearAllTrails() {
   for (const playerId of [1, 2]) {
     for (const mesh of trailMeshes[playerId].values()) {
       scene.remove(mesh);
+      // Dispose individual material to prevent memory leak
+      if (mesh.material) {
+        mesh.material.dispose();
+      }
     }
     trailMeshes[playerId].clear();
     // Reset tracking for new round
@@ -1555,6 +1600,64 @@ function clearAllExplosions() {
 }
 
 // =============================================================================
+// TRAIL FADING SYSTEM
+// Per-segment opacity fade based on spawn time
+// =============================================================================
+
+/**
+ * Updates trail segment opacity and removes fully faded segments.
+ * Called every frame in the animation loop.
+ * 
+ * Fade timeline per segment:
+ * - 0 to solidMs: Full opacity (0.92)
+ * - solidMs to (solidMs + fadeMs): Linear fade from 0.92 to 0
+ * - After (solidMs + fadeMs): Remove segment
+ * 
+ * @param {number} now - Current time from performance.now()
+ */
+function updateTrailFade(now) {
+  const { solidMs, fadeMs } = trailTiming;
+  const totalMs = solidMs + fadeMs;
+  const baseOpacity = 0.92; // Match createTrailMaterial starting opacity
+  
+  // Track segments to remove (can't modify Map while iterating)
+  const toRemove = [];
+  
+  for (const playerId of [1, 2]) {
+    for (const [key, mesh] of trailMeshes[playerId]) {
+      const spawnTime = mesh.userData.spawnTime;
+      if (!spawnTime) continue; // Safety check
+      
+      const age = now - spawnTime;
+      
+      if (age >= totalMs) {
+        // Segment expired - mark for removal
+        toRemove.push({ playerId, key, mesh });
+      } else if (age > solidMs) {
+        // In fade phase - compute opacity
+        const fadeProgress = (age - solidMs) / fadeMs; // 0 to 1
+        const opacity = baseOpacity * (1 - fadeProgress);
+        
+        // Update material opacity and emissive intensity
+        if (mesh.material) {
+          mesh.material.opacity = Math.max(0, opacity);
+          // Fade emissive glow proportionally for natural fade-out
+          mesh.material.emissiveIntensity = 0.85 * (1 - fadeProgress);
+        }
+      }
+      // else: age <= solidMs, keep full opacity (already set at creation)
+    }
+  }
+  
+  // Remove expired segments
+  for (const { playerId, key, mesh } of toRemove) {
+    scene.remove(mesh);
+    if (mesh.material) mesh.material.dispose();
+    trailMeshes[playerId].delete(key);
+  }
+}
+
+// =============================================================================
 // COUNTDOWN DROP-IN ANIMATION
 // Bikes descend from above during countdown, landing as game starts
 // =============================================================================
@@ -1754,6 +1857,15 @@ function animate() {
   const now = performance.now();
 
   // =========================================================================
+  // TRAIL FADING
+  // Update per-segment opacity fade and cleanup expired segments
+  // Only process during running/gameOver states (trails exist)
+  // =========================================================================
+  if (gameStatus === "running" || gameStatus === "gameOver") {
+    updateTrailFade(now);
+  }
+
+  // =========================================================================
   // COUNTDOWN DROP-IN ANIMATION
   // Bikes descend from sky during countdown - updates Y position
   // =========================================================================
@@ -1938,6 +2050,22 @@ function handleState(msg) {
   const prevStatus = gameStatus;
   gameStatus = msg.status;
 
+  // =========================================================================
+  // TRAIL TIMING SYNC
+  // Update local timing constants from server for accurate fade calculation
+  // =========================================================================
+  if (msg.trailTiming) {
+    trailTiming.tickInterval = msg.trailTiming.tickInterval || 50;
+    trailTiming.solidMs = msg.trailTiming.solidMs || 2000;
+    trailTiming.fadeMs = msg.trailTiming.fadeMs || 1000;
+  }
+  
+  // Calculate server tick offset for converting spawnTick to local time
+  // serverTickOffset + (tick * tickInterval) = performance.now() at that tick
+  // So: serverTickOffset = now - (tick * tickInterval)
+  const now = performance.now();
+  serverTickOffset = now - (msg.tick * trailTiming.tickInterval);
+
   const isNewRound =
     msg.tick < lastTick ||
     (prevStatus === "countdown" && gameStatus === "running") ||
@@ -1951,6 +2079,8 @@ function handleState(msg) {
     if (playerBikes[1]) playerBikes[1].userData.wasAlive = undefined;
     if (playerBikes[2]) playerBikes[2].userData.wasAlive = undefined;
     myReadyState = false;
+    // Reset tick offset for new round
+    serverTickOffset = now;
   }
 
   lastTick = msg.tick;
@@ -2041,28 +2171,31 @@ function handleState(msg) {
     }
   }
 
-  // Handle trails
+  // Handle trails (now with spawnTick for fade timing)
   if (msg.trailsFull) {
     for (const playerId of [1, 2]) {
       const serverTrails = msg.trailsFull[playerId] || [];
       const serverKeys = new Set(serverTrails.map((c) => `${c.x},${c.y}`));
 
+      // Remove segments no longer in server trail
       for (const [key, mesh] of trailMeshes[playerId]) {
         if (!serverKeys.has(key)) {
           scene.remove(mesh);
+          if (mesh.material) mesh.material.dispose();
           trailMeshes[playerId].delete(key);
         }
       }
 
+      // Create/update segments with spawnTick for fade sync
       for (const cell of serverTrails) {
-        createTrailSegment(playerId, cell.x, cell.y);
+        createTrailSegment(playerId, cell.x, cell.y, undefined, cell.spawnTick);
       }
     }
   } else if (msg.trailsDelta) {
     for (const playerId of [1, 2]) {
       const delta = msg.trailsDelta[playerId];
       if (delta) {
-        createTrailSegment(playerId, delta.x, delta.y);
+        createTrailSegment(playerId, delta.x, delta.y, undefined, delta.spawnTick);
       }
     }
   }

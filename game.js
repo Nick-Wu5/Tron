@@ -21,6 +21,17 @@ const FULL_SYNC_INTERVAL = 40; // Send full trails every 40 ticks (2 seconds)
 const GRID_WIDTH = 80;
 const GRID_HEIGHT = 60;
 
+// =============================================================================
+// TRAIL FADING CONFIGURATION
+// Segments remain solid for TRAIL_SOLID_TICKS, then fade for TRAIL_FADE_TICKS,
+// then are removed from collision and cleaned up.
+// Total lifetime = TRAIL_SOLID_TICKS + TRAIL_FADE_TICKS
+// =============================================================================
+const TRAIL_SOLID_MS = 2000; // 2 seconds fully visible/solid
+const TRAIL_FADE_MS = 1000; // 1 second fade-out
+const TRAIL_TOTAL_MS = TRAIL_SOLID_MS + TRAIL_FADE_MS; // 3 seconds total
+const TRAIL_TOTAL_TICKS = Math.ceil(TRAIL_TOTAL_MS / TICK_INTERVAL); // ~60 ticks
+
 // Direction vectors
 const DIR_VECTORS = {
   UP: { x: 0, y: -1 },
@@ -61,8 +72,8 @@ class Game {
 
     // Round state (reset each round)
     this.tick = 0;
-    this.occupied = new Set(); // "x,y" strings for O(1) collision
-    this.trails = { 1: [], 2: [] }; // Full trail arrays for broadcasting
+    this.occupied = new Map(); // "x,y" -> spawnTick for O(1) collision + expiration
+    this.trails = { 1: [], 2: [] }; // Full trail arrays: [{x, y, spawnTick}, ...]
     this.winner = null;
 
     // Tick loop timer
@@ -303,7 +314,7 @@ class Game {
 
   resetRoundState() {
     this.tick = 0;
-    this.occupied.clear();
+    this.occupied.clear(); // Map now, but clear() works the same
     this.trails = { 1: [], 2: [] };
     this.winner = null;
 
@@ -418,7 +429,7 @@ class Game {
         continue;
       }
 
-      // Check trail collision (O(1) lookup)
+      // Check trail collision (O(1) lookup via Map)
       const key = `${next.x},${next.y}`;
       if (this.occupied.has(key)) {
         deaths[id] = true;
@@ -515,11 +526,12 @@ class Game {
       const player = this.players[id];
       if (!player || !player.alive) continue;
 
-      // Add current position to trail and occupied set BEFORE moving
-      const trailCell = { x: player.x, y: player.y };
+      // Add current position to trail and occupied map BEFORE moving
+      // Include spawnTick for client-side fade timing
+      const trailCell = { x: player.x, y: player.y, spawnTick: this.tick };
       const key = `${player.x},${player.y}`;
 
-      this.occupied.add(key);
+      this.occupied.set(key, this.tick); // Map: key -> spawnTick
       this.trails[id].push(trailCell);
       trailsDelta[id] = trailCell;
 
@@ -530,6 +542,11 @@ class Game {
     }
 
     // -------------------------------------------------------------------------
+    // STEP 5.5: Expire old trail segments (remove from collision after total lifetime)
+    // -------------------------------------------------------------------------
+    this.expireOldTrailSegments();
+
+    // -------------------------------------------------------------------------
     // STEP 6: Broadcast state
     // -------------------------------------------------------------------------
     this.tick++;
@@ -537,6 +554,44 @@ class Game {
     // Determine if we should send full trails (every FULL_SYNC_INTERVAL ticks)
     const sendFull = this.tick % FULL_SYNC_INTERVAL === 0;
     this.broadcastState(sendFull, trailsDelta);
+  }
+
+  // ==========================================================================
+  // TRAIL EXPIRATION
+  // Removes segments from collision map and trail arrays after total lifetime
+  // ==========================================================================
+
+  /**
+   * Removes trail segments that have exceeded their total lifetime.
+   * Called every tick to ensure expired segments no longer cause collisions.
+   * Uses efficient O(n) scan of trails array (already sorted by spawnTick).
+   */
+  expireOldTrailSegments() {
+    const expirationTick = this.tick - TRAIL_TOTAL_TICKS;
+    
+    for (const id of [1, 2]) {
+      const trail = this.trails[id];
+      let expiredCount = 0;
+      
+      // Trails are in chronological order, so scan from front
+      // Count how many segments have expired
+      while (expiredCount < trail.length && trail[expiredCount].spawnTick <= expirationTick) {
+        const segment = trail[expiredCount];
+        const key = `${segment.x},${segment.y}`;
+        
+        // Only remove from occupied if this segment owns the cell
+        // (handles edge case of player crossing their own old trail position)
+        if (this.occupied.get(key) === segment.spawnTick) {
+          this.occupied.delete(key);
+        }
+        expiredCount++;
+      }
+      
+      // Remove expired segments from front of array
+      if (expiredCount > 0) {
+        this.trails[id] = trail.slice(expiredCount);
+      }
+    }
   }
 
   // ==========================================================================
@@ -567,17 +622,23 @@ class Game {
       players: playersData,
       score: { 1: this.score[1], 2: this.score[2] },
       winner: this.winner,
+      // Trail fade timing constants (clients need these for visual sync)
+      trailTiming: {
+        tickInterval: TICK_INTERVAL,
+        solidMs: TRAIL_SOLID_MS,
+        fadeMs: TRAIL_FADE_MS,
+      },
     };
 
-    // Add trail data
+    // Add trail data (now includes spawnTick per segment)
     if (sendFullTrails || this.tick === 0) {
-      // Full trail sync
+      // Full trail sync - segments already contain {x, y, spawnTick}
       msg.trailsFull = {
         1: [...this.trails[1]],
         2: [...this.trails[2]],
       };
     } else if (trailsDelta) {
-      // Delta only
+      // Delta only - segments contain {x, y, spawnTick}
       msg.trailsDelta = trailsDelta;
     }
 
