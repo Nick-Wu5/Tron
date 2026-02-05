@@ -97,6 +97,13 @@ let arenaGroup;
 let backgroundGroup; // Background elements
 let starField; // Starfield points
 
+// =============================================================================
+// PORTAL STATE
+// Teleportation portals rendered as glowing rings on the board
+// =============================================================================
+let portalMeshes = []; // Array of portal mesh groups
+let portalData = []; // Server-provided portal positions
+
 // Pedestal: placement + visibility - board surface Y coordinate
 // Used for positioning trails and bikes above the raised board
 const BOARD_SURFACE_Y = 0.5; // Board thickness, top surface is at this Y
@@ -1395,6 +1402,153 @@ function clearAllTrails() {
 }
 
 // =============================================================================
+// TELEPORTATION PORTALS
+// Rendered as glowing rings on the board surface
+// =============================================================================
+
+// Portal visual constants
+const PORTAL_RADIUS = 1.2;
+const PORTAL_TUBE_RADIUS = 0.15;
+const PORTAL_COLOR_A = 0xff00ff; // Magenta for portal A
+const PORTAL_COLOR_B = 0x00ffaa; // Cyan-green for portal B
+const PORTAL_HEIGHT = BOARD_SURFACE_Y + 0.3; // Slightly above board
+
+/**
+ * Creates or updates portal meshes based on server data.
+ * Each portal pair has two torus rings with matching colors.
+ * @param {Array} portals - Array of portal pairs from server
+ */
+function updatePortals(portals) {
+  // Clear existing portals if data changed
+  if (JSON.stringify(portals) === JSON.stringify(portalData)) {
+    return; // No change
+  }
+  
+  clearAllPortals();
+  portalData = portals || [];
+  
+  for (let i = 0; i < portalData.length; i++) {
+    const pair = portalData[i];
+    
+    // Create portal A
+    const portalA = createPortalMesh(PORTAL_COLOR_A, i * 2);
+    const worldPosA = gridToWorld(pair.a.x, pair.a.y);
+    portalA.position.set(worldPosA.x, PORTAL_HEIGHT, worldPosA.z);
+    scene.add(portalA);
+    portalMeshes.push(portalA);
+    
+    // Create portal B
+    const portalB = createPortalMesh(PORTAL_COLOR_B, i * 2 + 1);
+    const worldPosB = gridToWorld(pair.b.x, pair.b.y);
+    portalB.position.set(worldPosB.x, PORTAL_HEIGHT, worldPosB.z);
+    scene.add(portalB);
+    portalMeshes.push(portalB);
+    
+    console.log(`[Portals] Created pair ${i}: A(${pair.a.x},${pair.a.y}) B(${pair.b.x},${pair.b.y})`);
+  }
+}
+
+/**
+ * Creates a single portal mesh (glowing torus ring).
+ * @param {number} color - Portal color
+ * @param {number} index - Unique index for animation offset
+ * @returns {THREE.Group} - Portal mesh group
+ */
+function createPortalMesh(color, index) {
+  const group = new THREE.Group();
+  group.userData.portalIndex = index;
+  
+  // Main torus ring
+  const torusGeom = new THREE.TorusGeometry(PORTAL_RADIUS, PORTAL_TUBE_RADIUS, 16, 32);
+  const torusMat = new THREE.MeshStandardMaterial({
+    color: color,
+    emissive: color,
+    emissiveIntensity: 0.8,
+    roughness: 0.2,
+    metalness: 0.8,
+    transparent: true,
+    opacity: 0.9,
+  });
+  const torus = new THREE.Mesh(torusGeom, torusMat);
+  torus.rotation.x = Math.PI / 2; // Lay flat on the board
+  group.add(torus);
+  
+  // Inner glow ring (smaller, brighter)
+  const innerGeom = new THREE.TorusGeometry(PORTAL_RADIUS * 0.6, PORTAL_TUBE_RADIUS * 0.5, 12, 24);
+  const innerMat = new THREE.MeshStandardMaterial({
+    color: 0xffffff,
+    emissive: color,
+    emissiveIntensity: 1.2,
+    roughness: 0.1,
+    metalness: 0.9,
+    transparent: true,
+    opacity: 0.7,
+  });
+  const inner = new THREE.Mesh(innerGeom, innerMat);
+  inner.rotation.x = Math.PI / 2;
+  inner.position.y = 0.05;
+  group.add(inner);
+  
+  // Point light for glow effect
+  const light = new THREE.PointLight(color, 2, 8);
+  light.position.y = 0.5;
+  group.add(light);
+  
+  // Store materials for animation
+  group.userData.torusMat = torusMat;
+  group.userData.innerMat = innerMat;
+  group.userData.light = light;
+  
+  return group;
+}
+
+/**
+ * Clears all portal meshes from the scene.
+ */
+function clearAllPortals() {
+  for (const portal of portalMeshes) {
+    scene.remove(portal);
+    // Dispose geometries and materials
+    portal.traverse((child) => {
+      if (child.geometry) child.geometry.dispose();
+      if (child.material) child.material.dispose();
+    });
+  }
+  portalMeshes = [];
+  portalData = [];
+}
+
+/**
+ * Animates portals (rotation and pulsing glow).
+ * Called each frame in the animation loop.
+ * @param {number} elapsed - Time elapsed since start (seconds)
+ */
+function animatePortals(elapsed) {
+  for (const portal of portalMeshes) {
+    const index = portal.userData.portalIndex || 0;
+    const offset = index * Math.PI * 0.5; // Phase offset per portal
+    
+    // Rotate the portal
+    portal.rotation.y = elapsed * 0.5 + offset;
+    
+    // Pulse the glow
+    const pulse = 0.7 + Math.sin(elapsed * 3 + offset) * 0.3;
+    if (portal.userData.torusMat) {
+      portal.userData.torusMat.emissiveIntensity = 0.6 + pulse * 0.4;
+    }
+    if (portal.userData.innerMat) {
+      portal.userData.innerMat.emissiveIntensity = 1.0 + pulse * 0.4;
+    }
+    if (portal.userData.light) {
+      portal.userData.light.intensity = 1.5 + pulse;
+    }
+    
+    // Subtle bob
+    portal.position.y = PORTAL_HEIGHT + Math.sin(elapsed * 2 + offset) * 0.05;
+  }
+}
+
+// =============================================================================
 // TRON-STYLE ENERGY EXPLOSION
 // Visual effect when a player dies - energy discharge, not fire/smoke
 // =============================================================================
@@ -1878,6 +2032,12 @@ function animate() {
   updateExplosions(now);
 
   // =========================================================================
+  // PORTAL ANIMATIONS
+  // Rotate and pulse portal effects
+  // =========================================================================
+  animatePortals(elapsed);
+
+  // =========================================================================
   // BIKE VISUAL EFFECTS
   // =========================================================================
 
@@ -2072,15 +2232,24 @@ function handleState(msg) {
     (prevStatus === "gameOver" && gameStatus === "ready");
 
   if (isNewRound) {
-    console.log("New round detected, clearing trails");
+    console.log("New round detected, clearing trails and portals");
     clearAllTrails();
     clearAllExplosions(); // Cleanup any lingering explosions
+    clearAllPortals(); // Clear portals for fresh generation
     // Reset wasAlive tracking for new round
     if (playerBikes[1]) playerBikes[1].userData.wasAlive = undefined;
     if (playerBikes[2]) playerBikes[2].userData.wasAlive = undefined;
     myReadyState = false;
     // Reset tick offset for new round
     serverTickOffset = now;
+  }
+  
+  // =========================================================================
+  // PORTAL SYNC
+  // Update portal positions from server (only changes on new round)
+  // =========================================================================
+  if (msg.portals) {
+    updatePortals(msg.portals);
   }
 
   lastTick = msg.tick;

@@ -27,10 +27,20 @@ const GRID_HEIGHT = 60;
 // then are removed from collision and cleaned up.
 // Total lifetime = TRAIL_SOLID_TICKS + TRAIL_FADE_TICKS
 // =============================================================================
-const TRAIL_SOLID_MS = 2000; // 2 seconds fully visible/solid
-const TRAIL_FADE_MS = 1000; // 1 second fade-out
-const TRAIL_TOTAL_MS = TRAIL_SOLID_MS + TRAIL_FADE_MS; // 3 seconds total
-const TRAIL_TOTAL_TICKS = Math.ceil(TRAIL_TOTAL_MS / TICK_INTERVAL); // ~60 ticks
+const TRAIL_SOLID_MS = 3000; // 3 seconds fully visible/solid
+const TRAIL_FADE_MS = 2000; // 2 seconds fade-out
+const TRAIL_TOTAL_MS = TRAIL_SOLID_MS + TRAIL_FADE_MS; // 5 seconds total
+const TRAIL_TOTAL_TICKS = Math.ceil(TRAIL_TOTAL_MS / TICK_INTERVAL); // ~100 ticks
+
+// =============================================================================
+// PORTAL CONFIGURATION
+// Teleportation portals come in pairs - entering one exits at the other
+// =============================================================================
+const PORTAL_COUNT = 1; // Number of portal pairs per round
+const PORTAL_COOLDOWN_TICKS = 20; // 1 second before player can re-enter any portal
+const PORTAL_MIN_DISTANCE = 15; // Minimum distance between portals in a pair
+const PORTAL_EDGE_MARGIN = 5; // Minimum distance from board edge
+const PORTAL_PLAYER_MARGIN = 10; // Minimum distance from player starting positions
 
 // Direction vectors
 const DIR_VECTORS = {
@@ -75,6 +85,10 @@ class Game {
     this.occupied = new Map(); // "x,y" -> spawnTick for O(1) collision + expiration
     this.trails = { 1: [], 2: [] }; // Full trail arrays: [{x, y, spawnTick}, ...]
     this.winner = null;
+    
+    // Portal state (regenerated each round)
+    // Array of portal pairs: [{a: {x, y, exitDir}, b: {x, y, exitDir}}, ...]
+    this.portals = [];
 
     // Tick loop timer
     this.tickTimer = null;
@@ -110,6 +124,7 @@ class Game {
       connected: true,
       ready: false,
       inputQueue: null, // Last queued input direction
+      portalCooldown: 0, // Ticks until player can use portals again
     };
 
     // Check if we now have 2 players
@@ -324,7 +339,110 @@ class Game {
       if (player) {
         player.alive = true;
         player.inputQueue = null;
+        player.portalCooldown = 0;
       }
+    }
+    
+    // Generate new portal positions for this round
+    this.generatePortals();
+  }
+
+  /**
+   * Generates random portal pair positions for the round.
+   * Each pair has two portals (a and b) with exit directions facing away from center.
+   */
+  generatePortals() {
+    this.portals = [];
+    
+    // Player starting positions to avoid
+    const p1Start = { x: 10, y: Math.floor(this.gridHeight / 2) };
+    const p2Start = { x: this.gridWidth - 11, y: Math.floor(this.gridHeight / 2) };
+    
+    for (let i = 0; i < PORTAL_COUNT; i++) {
+      let attempts = 0;
+      let portalPair = null;
+      
+      while (!portalPair && attempts < 100) {
+        attempts++;
+        
+        // Generate portal A position
+        const ax = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
+        const ay = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN));
+        
+        // Generate portal B position
+        const bx = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
+        const by = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN));
+        
+        // Check distance between portals
+        const dist = Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
+        if (dist < PORTAL_MIN_DISTANCE) continue;
+        
+        // Check distance from player starts
+        const distA1 = Math.sqrt((ax - p1Start.x) ** 2 + (ay - p1Start.y) ** 2);
+        const distA2 = Math.sqrt((ax - p2Start.x) ** 2 + (ay - p2Start.y) ** 2);
+        const distB1 = Math.sqrt((bx - p1Start.x) ** 2 + (by - p1Start.y) ** 2);
+        const distB2 = Math.sqrt((bx - p2Start.x) ** 2 + (by - p2Start.y) ** 2);
+        
+        if (distA1 < PORTAL_PLAYER_MARGIN || distA2 < PORTAL_PLAYER_MARGIN ||
+            distB1 < PORTAL_PLAYER_MARGIN || distB2 < PORTAL_PLAYER_MARGIN) {
+          continue;
+        }
+        
+        // Check not overlapping with existing portals
+        let overlaps = false;
+        for (const existing of this.portals) {
+          if ((existing.a.x === ax && existing.a.y === ay) ||
+              (existing.b.x === ax && existing.b.y === ay) ||
+              (existing.a.x === bx && existing.a.y === by) ||
+              (existing.b.x === bx && existing.b.y === by)) {
+            overlaps = true;
+            break;
+          }
+        }
+        if (overlaps) continue;
+        
+        // Calculate exit directions (face away from board center)
+        const centerX = this.gridWidth / 2;
+        const centerY = this.gridHeight / 2;
+        
+        portalPair = {
+          a: {
+            x: ax,
+            y: ay,
+            exitDir: this.getExitDirection(ax, ay, centerX, centerY),
+          },
+          b: {
+            x: bx,
+            y: by,
+            exitDir: this.getExitDirection(bx, by, centerX, centerY),
+          },
+        };
+      }
+      
+      if (portalPair) {
+        this.portals.push(portalPair);
+        console.log(`[Portals] Generated pair: A(${portalPair.a.x},${portalPair.a.y}) <-> B(${portalPair.b.x},${portalPair.b.y})`);
+      }
+    }
+  }
+
+  /**
+   * Determines exit direction facing away from a reference point (usually board center).
+   * @param {number} x - Portal X position
+   * @param {number} y - Portal Y position  
+   * @param {number} refX - Reference X (center)
+   * @param {number} refY - Reference Y (center)
+   * @returns {string} - Direction: UP, DOWN, LEFT, or RIGHT
+   */
+  getExitDirection(x, y, refX, refY) {
+    const dx = x - refX;
+    const dy = y - refY;
+    
+    // Choose the dominant axis direction away from center
+    if (Math.abs(dx) > Math.abs(dy)) {
+      return dx > 0 ? "RIGHT" : "LEFT";
+    } else {
+      return dy > 0 ? "DOWN" : "UP";
     }
   }
 
@@ -396,15 +514,67 @@ class Game {
     // STEP 2: Compute proposed next positions (no mutation yet)
     // -------------------------------------------------------------------------
     const nextPositions = {};
+    const teleported = { 1: false, 2: false }; // Track who teleported this tick
+    
     for (const id of [1, 2]) {
       const player = this.players[id];
       if (!player || !player.alive) continue;
+
+      // Decrement portal cooldown
+      if (player.portalCooldown > 0) {
+        player.portalCooldown--;
+      }
 
       const vec = DIR_VECTORS[player.dir];
       nextPositions[id] = {
         x: player.x + vec.x,
         y: player.y + vec.y,
       };
+    }
+
+    // -------------------------------------------------------------------------
+    // STEP 2.5: Check for portal teleportation
+    // If player's next position is a portal and they're not on cooldown,
+    // teleport them to the linked portal and apply cooldown
+    // -------------------------------------------------------------------------
+    for (const id of [1, 2]) {
+      const player = this.players[id];
+      if (!player || !player.alive) continue;
+      if (player.portalCooldown > 0) continue; // Can't use portal while on cooldown
+
+      const next = nextPositions[id];
+      
+      // Check if next position is a portal
+      for (const portalPair of this.portals) {
+        let exitPortal = null;
+        
+        if (next.x === portalPair.a.x && next.y === portalPair.a.y) {
+          // Entering portal A, exit at B
+          exitPortal = portalPair.b;
+        } else if (next.x === portalPair.b.x && next.y === portalPair.b.y) {
+          // Entering portal B, exit at A
+          exitPortal = portalPair.a;
+        }
+        
+        if (exitPortal) {
+          // Teleport: change next position to exit portal
+          nextPositions[id] = {
+            x: exitPortal.x,
+            y: exitPortal.y,
+          };
+          
+          // Change player direction to exit direction
+          player.dir = exitPortal.exitDir;
+          
+          // Apply cooldown to prevent immediate re-entry
+          player.portalCooldown = PORTAL_COOLDOWN_TICKS;
+          
+          teleported[id] = true;
+          
+          console.log(`[Portal] Player ${id} teleported to (${exitPortal.x},${exitPortal.y}) facing ${exitPortal.exitDir}`);
+          break; // Only one teleport per tick
+        }
+      }
     }
 
     // -------------------------------------------------------------------------
@@ -628,6 +798,8 @@ class Game {
         solidMs: TRAIL_SOLID_MS,
         fadeMs: TRAIL_FADE_MS,
       },
+      // Portal positions for client rendering
+      portals: this.portals,
     };
 
     // Add trail data (now includes spawnTick per segment)
