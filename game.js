@@ -42,6 +42,16 @@ const PORTAL_MIN_DISTANCE = 15; // Minimum distance between portals in a pair
 const PORTAL_EDGE_MARGIN = 5; // Minimum distance from board edge
 const PORTAL_PLAYER_MARGIN = 10; // Minimum distance from player starting positions
 
+// =============================================================================
+// PROXIMITY SPEED-UP CONFIGURATION
+// When a player is close to any trail, they move faster (risk-reward tension)
+// Server-authoritative: speed computed on server, client just renders result
+// =============================================================================
+const PROXIMITY_DISTANCE = 2; // Manhattan distance to trigger boost (2 = within 2 cells)
+const BOOSTED_SPEED = 2; // Cells per tick when boosted (normal = 1)
+const NECK_EXCLUSION_COUNT = 3; // Exclude last N cells of own trail (the "neck")
+const DEBUG_SPEEDUP = true; // Enable speedup diagnostics (set false for production)
+
 // Direction vectors
 const DIR_VECTORS = {
   UP: { x: 0, y: -1 },
@@ -85,7 +95,7 @@ class Game {
     this.occupied = new Map(); // "x,y" -> spawnTick for O(1) collision + expiration
     this.trails = { 1: [], 2: [] }; // Full trail arrays: [{x, y, spawnTick}, ...]
     this.winner = null;
-    
+
     // Portal state (regenerated each round)
     // Array of portal pairs: [{a: {x, y, exitDir}, b: {x, y, exitDir}}, ...]
     this.portals = [];
@@ -340,9 +350,10 @@ class Game {
         player.alive = true;
         player.inputQueue = null;
         player.portalCooldown = 0;
+        player.boosted = false; // Proximity speed-up state
       }
     }
-    
+
     // Generate new portal positions for this round
     this.generatePortals();
   }
@@ -353,58 +364,79 @@ class Game {
    */
   generatePortals() {
     this.portals = [];
-    
+
     // Player starting positions to avoid
     const p1Start = { x: 10, y: Math.floor(this.gridHeight / 2) };
-    const p2Start = { x: this.gridWidth - 11, y: Math.floor(this.gridHeight / 2) };
-    
+    const p2Start = {
+      x: this.gridWidth - 11,
+      y: Math.floor(this.gridHeight / 2),
+    };
+
     for (let i = 0; i < PORTAL_COUNT; i++) {
       let attempts = 0;
       let portalPair = null;
-      
+
       while (!portalPair && attempts < 100) {
         attempts++;
-        
+
         // Generate portal A position
-        const ax = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
-        const ay = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN));
-        
+        const ax =
+          PORTAL_EDGE_MARGIN +
+          Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
+        const ay =
+          PORTAL_EDGE_MARGIN +
+          Math.floor(
+            Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN)
+          );
+
         // Generate portal B position
-        const bx = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
-        const by = PORTAL_EDGE_MARGIN + Math.floor(Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN));
-        
+        const bx =
+          PORTAL_EDGE_MARGIN +
+          Math.floor(Math.random() * (this.gridWidth - 2 * PORTAL_EDGE_MARGIN));
+        const by =
+          PORTAL_EDGE_MARGIN +
+          Math.floor(
+            Math.random() * (this.gridHeight - 2 * PORTAL_EDGE_MARGIN)
+          );
+
         // Check distance between portals
         const dist = Math.sqrt((bx - ax) ** 2 + (by - ay) ** 2);
         if (dist < PORTAL_MIN_DISTANCE) continue;
-        
+
         // Check distance from player starts
         const distA1 = Math.sqrt((ax - p1Start.x) ** 2 + (ay - p1Start.y) ** 2);
         const distA2 = Math.sqrt((ax - p2Start.x) ** 2 + (ay - p2Start.y) ** 2);
         const distB1 = Math.sqrt((bx - p1Start.x) ** 2 + (by - p1Start.y) ** 2);
         const distB2 = Math.sqrt((bx - p2Start.x) ** 2 + (by - p2Start.y) ** 2);
-        
-        if (distA1 < PORTAL_PLAYER_MARGIN || distA2 < PORTAL_PLAYER_MARGIN ||
-            distB1 < PORTAL_PLAYER_MARGIN || distB2 < PORTAL_PLAYER_MARGIN) {
+
+        if (
+          distA1 < PORTAL_PLAYER_MARGIN ||
+          distA2 < PORTAL_PLAYER_MARGIN ||
+          distB1 < PORTAL_PLAYER_MARGIN ||
+          distB2 < PORTAL_PLAYER_MARGIN
+        ) {
           continue;
         }
-        
+
         // Check not overlapping with existing portals
         let overlaps = false;
         for (const existing of this.portals) {
-          if ((existing.a.x === ax && existing.a.y === ay) ||
-              (existing.b.x === ax && existing.b.y === ay) ||
-              (existing.a.x === bx && existing.a.y === by) ||
-              (existing.b.x === bx && existing.b.y === by)) {
+          if (
+            (existing.a.x === ax && existing.a.y === ay) ||
+            (existing.b.x === ax && existing.b.y === ay) ||
+            (existing.a.x === bx && existing.a.y === by) ||
+            (existing.b.x === bx && existing.b.y === by)
+          ) {
             overlaps = true;
             break;
           }
         }
         if (overlaps) continue;
-        
+
         // Calculate exit directions (face away from board center)
         const centerX = this.gridWidth / 2;
         const centerY = this.gridHeight / 2;
-        
+
         portalPair = {
           a: {
             x: ax,
@@ -418,10 +450,12 @@ class Game {
           },
         };
       }
-      
+
       if (portalPair) {
         this.portals.push(portalPair);
-        console.log(`[Portals] Generated pair: A(${portalPair.a.x},${portalPair.a.y}) <-> B(${portalPair.b.x},${portalPair.b.y})`);
+        console.log(
+          `[Portals] Generated pair: A(${portalPair.a.x},${portalPair.a.y}) <-> B(${portalPair.b.x},${portalPair.b.y})`
+        );
       }
     }
   }
@@ -429,7 +463,7 @@ class Game {
   /**
    * Determines exit direction facing away from a reference point (usually board center).
    * @param {number} x - Portal X position
-   * @param {number} y - Portal Y position  
+   * @param {number} y - Portal Y position
    * @param {number} refX - Reference X (center)
    * @param {number} refY - Reference Y (center)
    * @returns {string} - Direction: UP, DOWN, LEFT, or RIGHT
@@ -437,13 +471,65 @@ class Game {
   getExitDirection(x, y, refX, refY) {
     const dx = x - refX;
     const dy = y - refY;
-    
+
     // Choose the dominant axis direction away from center
     if (Math.abs(dx) > Math.abs(dy)) {
       return dx > 0 ? "RIGHT" : "LEFT";
     } else {
       return dy > 0 ? "DOWN" : "UP";
     }
+  }
+
+  // ==========================================================================
+  // PROXIMITY SPEED-UP HELPER
+  // Checks if player is near ANY trail (opponent OR own, excluding "neck")
+  // The "neck" is the most recent trail cells directly behind the player
+  // ==========================================================================
+
+  /**
+   * Checks if a player is near any trail cell (opponent's OR own older trail).
+   * We exclude the player's "neck" (last N cells) because:
+   * - The neck is always adjacent (would make boost always-on)
+   * - But older own trail CAN trigger boost (risky self-loops rewarded)
+   * @param {Object} player - Player object with id, x, y
+   * @returns {boolean} - True if within PROXIMITY_DISTANCE of triggering trail
+   */
+  isNearTrail(player) {
+    const px = player.x;
+    const py = player.y;
+    const playerId = player.id;
+
+    // Build a set of the player's "neck" cells to exclude (last N trail cells)
+    // These are too recent and would always trigger boost
+    const neckSet = new Set();
+    const ownTrail = this.trails[playerId];
+    const neckStart = Math.max(0, ownTrail.length - NECK_EXCLUSION_COUNT);
+    for (let i = neckStart; i < ownTrail.length; i++) {
+      neckSet.add(`${ownTrail[i].x},${ownTrail[i].y}`);
+    }
+
+    // Check all cells within Manhattan distance
+    for (let dx = -PROXIMITY_DISTANCE; dx <= PROXIMITY_DISTANCE; dx++) {
+      for (let dy = -PROXIMITY_DISTANCE; dy <= PROXIMITY_DISTANCE; dy++) {
+        // Skip if Manhattan distance exceeds threshold
+        const dist = Math.abs(dx) + Math.abs(dy);
+        if (dist > PROXIMITY_DISTANCE || dist === 0) continue;
+
+        const checkX = px + dx;
+        const checkY = py + dy;
+        const key = `${checkX},${checkY}`;
+
+        // Skip if this is the player's "neck" (recent trail)
+        if (neckSet.has(key)) continue;
+
+        // Check if this cell is occupied (any trail - own older OR opponent)
+        if (this.occupied.has(key)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   initializePlayerPositions() {
@@ -511,11 +597,14 @@ class Game {
     }
 
     // -------------------------------------------------------------------------
-    // STEP 2: Compute proposed next positions (no mutation yet)
+    // STEP 2: Compute proposed positions with PROXIMITY SPEED-UP
+    // If player is near a trail, they move BOOSTED_SPEED cells instead of 1
     // -------------------------------------------------------------------------
     const nextPositions = {};
     const teleported = { 1: false, 2: false }; // Track who teleported this tick
-    
+    const playerSpeed = { 1: 1, 2: 1 }; // Track speed for collision checking
+    const movementPath = { 1: [], 2: [] }; // All cells traversed this tick
+
     for (const id of [1, 2]) {
       const player = this.players[id];
       if (!player || !player.alive) continue;
@@ -525,10 +614,38 @@ class Game {
         player.portalCooldown--;
       }
 
+      // Check proximity for speed boost (server-authoritative)
+      const isBoosted = this.isNearTrail(player);
+      const speed = isBoosted ? BOOSTED_SPEED : 1;
+      playerSpeed[id] = speed;
+
+      // DEBUG: Log speedup diagnostics (rate-limited to every 20 ticks)
+      if (DEBUG_SPEEDUP && (this.tick % 20 === 0 || isBoosted)) {
+        const ownTrailLen = this.trails[id]?.length || 0;
+        const oppTrailLen = this.trails[id === 1 ? 2 : 1]?.length || 0;
+        console.log(
+          `[SPEEDUP T${this.tick}] P${id} pos=(${player.x},${player.y}) ` +
+            `boosted=${isBoosted} speed=${speed} ownTrail=${ownTrailLen} oppTrail=${oppTrailLen}`
+        );
+      }
+
       const vec = DIR_VECTORS[player.dir];
+
+      // Compute all intermediate positions for collision checking
+      // When boosted, we move multiple cells and must check each one
+      let currentX = player.x;
+      let currentY = player.y;
+
+      for (let step = 1; step <= speed; step++) {
+        currentX += vec.x;
+        currentY += vec.y;
+        movementPath[id].push({ x: currentX, y: currentY, step });
+      }
+
+      // Final position is the last cell in the path
       nextPositions[id] = {
-        x: player.x + vec.x,
-        y: player.y + vec.y,
+        x: currentX,
+        y: currentY,
       };
     }
 
@@ -543,11 +660,11 @@ class Game {
       if (player.portalCooldown > 0) continue; // Can't use portal while on cooldown
 
       const next = nextPositions[id];
-      
+
       // Check if next position is a portal
       for (const portalPair of this.portals) {
         let exitPortal = null;
-        
+
         if (next.x === portalPair.a.x && next.y === portalPair.a.y) {
           // Entering portal A, exit at B
           exitPortal = portalPair.b;
@@ -555,75 +672,94 @@ class Game {
           // Entering portal B, exit at A
           exitPortal = portalPair.a;
         }
-        
+
         if (exitPortal) {
           // Teleport: change next position to exit portal
           nextPositions[id] = {
             x: exitPortal.x,
             y: exitPortal.y,
           };
-          
+
           // Change player direction to exit direction
           player.dir = exitPortal.exitDir;
-          
+
           // Apply cooldown to prevent immediate re-entry
           player.portalCooldown = PORTAL_COOLDOWN_TICKS;
-          
+
           teleported[id] = true;
-          
-          console.log(`[Portal] Player ${id} teleported to (${exitPortal.x},${exitPortal.y}) facing ${exitPortal.exitDir}`);
+
+          console.log(
+            `[Portal] Player ${id} teleported to (${exitPortal.x},${exitPortal.y}) facing ${exitPortal.exitDir}`
+          );
           break; // Only one teleport per tick
         }
       }
     }
 
     // -------------------------------------------------------------------------
-    // STEP 3: Resolve collisions
+    // STEP 3: Resolve collisions (check ALL cells in movement path)
+    // For boosted movement, collision at ANY intermediate step kills player
     // -------------------------------------------------------------------------
     const deaths = { 1: false, 2: false };
+    const deathStep = { 1: -1, 2: -1 }; // Which step caused death (for trail truncation)
 
     for (const id of [1, 2]) {
       const player = this.players[id];
       if (!player || !player.alive) continue;
 
-      const next = nextPositions[id];
+      const path = movementPath[id];
 
-      // Check wall collision
-      if (
-        next.x < 0 ||
-        next.x >= this.gridWidth ||
-        next.y < 0 ||
-        next.y >= this.gridHeight
-      ) {
-        deaths[id] = true;
-        continue;
-      }
+      // Check each cell in the movement path
+      for (const pos of path) {
+        // Check wall collision
+        if (
+          pos.x < 0 ||
+          pos.x >= this.gridWidth ||
+          pos.y < 0 ||
+          pos.y >= this.gridHeight
+        ) {
+          deaths[id] = true;
+          deathStep[id] = pos.step;
+          break;
+        }
 
-      // Check trail collision (O(1) lookup via Map)
-      const key = `${next.x},${next.y}`;
-      if (this.occupied.has(key)) {
-        deaths[id] = true;
-        continue;
+        // Check trail collision (O(1) lookup via Map)
+        const key = `${pos.x},${pos.y}`;
+        if (this.occupied.has(key)) {
+          deaths[id] = true;
+          deathStep[id] = pos.step;
+          break;
+        }
       }
     }
 
-    // Head-on collision check: both alive players moving to same cell
+    // Head-on collision check: check if movement paths intersect
+    // With boosted movement, we check ALL cells in both paths for overlap
     if (
       !deaths[1] &&
       !deaths[2] &&
       this.players[1]?.alive &&
       this.players[2]?.alive
     ) {
-      const next1 = nextPositions[1];
-      const next2 = nextPositions[2];
-      if (next1 && next2 && next1.x === next2.x && next1.y === next2.y) {
-        deaths[1] = true;
-        deaths[2] = true;
+      const path1 = movementPath[1];
+      const path2 = movementPath[2];
+
+      // Check if any cell in path1 is also in path2
+      const path2Set = new Set(path2.map((p) => `${p.x},${p.y}`));
+      for (const pos of path1) {
+        if (path2Set.has(`${pos.x},${pos.y}`)) {
+          console.log(
+            `[Tick ${this.tick}] Head-on collision at (${pos.x},${pos.y})`
+          );
+          deaths[1] = true;
+          deaths[2] = true;
+          break;
+        }
       }
     }
 
     // Pass-through collision check: players swap positions (crossing paths)
-    // P1 at A moving to B, P2 at B moving to A => they pass through each other
+    // With boosted movement, check if P1's start is in P2's path AND vice versa
     if (
       !deaths[1] &&
       !deaths[2] &&
@@ -632,17 +768,20 @@ class Game {
     ) {
       const p1 = this.players[1];
       const p2 = this.players[2];
-      const next1 = nextPositions[1];
-      const next2 = nextPositions[2];
-      if (
-        next1 &&
-        next2 &&
-        p1.x === next2.x &&
-        p1.y === next2.y &&
-        p2.x === next1.x &&
-        p2.y === next1.y
-      ) {
-        // They're swapping positions - treat as head-on collision
+      const path1 = movementPath[1];
+      const path2 = movementPath[2];
+
+      // Check if P1's start position is in P2's path
+      const p1StartInP2Path = path2.some(
+        (pos) => pos.x === p1.x && pos.y === p1.y
+      );
+      // Check if P2's start position is in P1's path
+      const p2StartInP1Path = path1.some(
+        (pos) => pos.x === p2.x && pos.y === p2.y
+      );
+
+      if (p1StartInP2Path && p2StartInP1Path) {
+        // They're crossing through each other - treat as head-on collision
         console.log(`[Tick ${this.tick}] Pass-through collision detected`);
         deaths[1] = true;
         deaths[2] = true;
@@ -691,24 +830,45 @@ class Game {
 
     // -------------------------------------------------------------------------
     // STEP 5: Commit movement for alive players
+    // For boosted movement, add ALL intermediate cells to trail
     // -------------------------------------------------------------------------
     for (const id of [1, 2]) {
       const player = this.players[id];
       if (!player || !player.alive) continue;
 
-      // Add current position to trail and occupied map BEFORE moving
-      // Include spawnTick for client-side fade timing
-      const trailCell = { x: player.x, y: player.y, spawnTick: this.tick };
-      const key = `${player.x},${player.y}`;
+      const path = movementPath[id];
+      const trailCells = []; // All new trail cells this tick
 
-      this.occupied.set(key, this.tick); // Map: key -> spawnTick
-      this.trails[id].push(trailCell);
-      trailsDelta[id] = trailCell;
+      // Add current (starting) position to trail first
+      const startCell = { x: player.x, y: player.y, spawnTick: this.tick };
+      const startKey = `${player.x},${player.y}`;
+      this.occupied.set(startKey, this.tick);
+      this.trails[id].push(startCell);
+      trailCells.push(startCell);
 
-      // Move to next position
+      // For boosted movement, add intermediate cells to trail too
+      // (but not the final position - player will be there)
+      if (path.length > 1) {
+        for (let i = 0; i < path.length - 1; i++) {
+          const pos = path[i];
+          const cell = { x: pos.x, y: pos.y, spawnTick: this.tick };
+          const key = `${pos.x},${pos.y}`;
+          this.occupied.set(key, this.tick);
+          this.trails[id].push(cell);
+          trailCells.push(cell);
+        }
+      }
+
+      // Store all trail cells added this tick (may be multiple if boosted)
+      trailsDelta[id] = trailCells.length === 1 ? trailCells[0] : trailCells;
+
+      // Move to final position
       const next = nextPositions[id];
       player.x = next.x;
       player.y = next.y;
+
+      // Store current speed for client rendering
+      player.boosted = playerSpeed[id] > 1;
     }
 
     // -------------------------------------------------------------------------
@@ -738,17 +898,20 @@ class Game {
    */
   expireOldTrailSegments() {
     const expirationTick = this.tick - TRAIL_TOTAL_TICKS;
-    
+
     for (const id of [1, 2]) {
       const trail = this.trails[id];
       let expiredCount = 0;
-      
+
       // Trails are in chronological order, so scan from front
       // Count how many segments have expired
-      while (expiredCount < trail.length && trail[expiredCount].spawnTick <= expirationTick) {
+      while (
+        expiredCount < trail.length &&
+        trail[expiredCount].spawnTick <= expirationTick
+      ) {
         const segment = trail[expiredCount];
         const key = `${segment.x},${segment.y}`;
-        
+
         // Only remove from occupied if this segment owns the cell
         // (handles edge case of player crossing their own old trail position)
         if (this.occupied.get(key) === segment.spawnTick) {
@@ -756,7 +919,7 @@ class Game {
         }
         expiredCount++;
       }
-      
+
       // Remove expired segments from front of array
       if (expiredCount > 0) {
         this.trails[id] = trail.slice(expiredCount);
@@ -781,6 +944,7 @@ class Game {
           dir: player.dir,
           alive: player.alive,
           ready: player.ready,
+          boosted: player.boosted || false, // Proximity speed-up indicator
         });
       }
     }

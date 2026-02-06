@@ -114,6 +114,13 @@ let pendingGameOverMsg = null; // Store the message to display after delay
 let portalMeshes = []; // Array of portal mesh groups
 let portalData = []; // Server-provided portal positions
 
+// =============================================================================
+// BOOST VISUAL EFFECTS STATE
+// Dramatic visual feedback when player is near opponent's trail
+// =============================================================================
+let boostAuras = {}; // Glowing aura meshes per player
+let boostParticles = {}; // Speed particle systems per player
+
 // Pedestal: placement + visibility - board surface Y coordinate
 // Used for positioning trails and bikes above the raised board
 const BOARD_SURFACE_Y = 0.5; // Board thickness, top surface is at this Y
@@ -173,6 +180,11 @@ const gameoverOverlay = document.getElementById("gameover-overlay");
 const winnerText = document.getElementById("winner-text");
 const musicToggle = document.getElementById("music-toggle");
 const musicIcon = document.getElementById("music-icon");
+
+// Boost indicator (DEBUG)
+const boostIndicator = document.getElementById("boost-indicator");
+const boostP1 = document.getElementById("boost-p1");
+const boostP2 = document.getElementById("boost-p2");
 const musicLabel = document.getElementById("music-label");
 
 // =============================================================================
@@ -1193,6 +1205,177 @@ function createPlayerBikes() {
   // Pedestal: placement + visibility - light positioned above raised board surface
   playerLights[2].position.y = BOARD_SURFACE_Y + 2.5;
   scene.add(playerLights[2]);
+
+  // Create boost visual effects for both players
+  createBoostEffects();
+}
+
+// =============================================================================
+// BOOST VISUAL EFFECTS
+// Dramatic aura and particle effects when player is near opponent's trail
+// =============================================================================
+
+function createBoostEffects() {
+  // Remove existing boost effects
+  for (const id of [1, 2]) {
+    if (boostAuras[id]) scene.remove(boostAuras[id]);
+    if (boostParticles[id]) scene.remove(boostParticles[id]);
+  }
+
+  for (const id of [1, 2]) {
+    const color = id === 1 ? P1_COLOR : P2_COLOR;
+
+    // 1) BOOST AURA - glowing ring around the bike
+    const auraGeom = new THREE.RingGeometry(1.2, 1.8, 32);
+    const auraMat = new THREE.MeshBasicMaterial({
+      color: color,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+    });
+    const aura = new THREE.Mesh(auraGeom, auraMat);
+    aura.rotation.x = -Math.PI / 2; // Flat on XZ plane
+    aura.visible = false;
+    scene.add(aura);
+    boostAuras[id] = aura;
+
+    // 2) SPEED PARTICLES - trailing sparks behind bike
+    const particleCount = 20;
+    const positions = new Float32Array(particleCount * 3);
+    const velocities = [];
+
+    for (let i = 0; i < particleCount; i++) {
+      positions[i * 3] = 0;
+      positions[i * 3 + 1] = 0;
+      positions[i * 3 + 2] = 0;
+      velocities.push({
+        life: 0,
+        maxLife: 300 + Math.random() * 200,
+        vx: 0,
+        vy: 0,
+        vz: 0,
+      });
+    }
+
+    const particleGeom = new THREE.BufferGeometry();
+    particleGeom.setAttribute(
+      "position",
+      new THREE.BufferAttribute(positions, 3)
+    );
+
+    const particleMat = new THREE.PointsMaterial({
+      color: color,
+      size: 0.4,
+      transparent: true,
+      opacity: 0,
+    });
+
+    const particles = new THREE.Points(particleGeom, particleMat);
+    particles.userData.velocities = velocities;
+    particles.userData.baseX = 0;
+    particles.userData.baseZ = 0;
+    particles.visible = false;
+    scene.add(particles);
+    boostParticles[id] = particles;
+  }
+}
+
+/**
+ * Updates boost visual effects each frame
+ * @param {number} elapsed - Time elapsed since start
+ * @param {number} deltaMs - Time since last frame in ms
+ */
+function updateBoostEffects(elapsed, deltaMs) {
+  for (const id of [1, 2]) {
+    const bike = playerBikes[id];
+    if (!bike || !bike.visible) {
+      if (boostAuras[id]) boostAuras[id].visible = false;
+      if (boostParticles[id]) boostParticles[id].visible = false;
+      continue;
+    }
+
+    const isBoosted = bike.userData.boosted || false;
+    const aura = boostAuras[id];
+    const particles = boostParticles[id];
+
+    if (!aura || !particles) continue;
+
+    // Update aura
+    aura.position.x = bike.position.x;
+    aura.position.y = BOARD_SURFACE_Y + 0.1;
+    aura.position.z = bike.position.z;
+
+    if (isBoosted) {
+      aura.visible = true;
+      // Pulsing, rotating aura
+      const pulse = 0.4 + Math.sin(elapsed * 15) * 0.2;
+      aura.material.opacity = pulse;
+      aura.rotation.z = elapsed * 3; // Spin effect
+      const scale = 1.0 + Math.sin(elapsed * 10) * 0.15;
+      aura.scale.set(scale, scale, 1);
+    } else {
+      // Fade out when not boosted
+      aura.material.opacity *= 0.9;
+      if (aura.material.opacity < 0.01) {
+        aura.visible = false;
+      }
+    }
+
+    // Update speed particles
+    particles.position.x = bike.position.x;
+    particles.position.y = BOARD_SURFACE_Y + 0.3;
+    particles.position.z = bike.position.z;
+
+    if (isBoosted) {
+      particles.visible = true;
+      particles.material.opacity = 0.8;
+
+      // Get direction vector for particle emission
+      const dir = playerDirections[id] || "RIGHT";
+      const vec = {
+        UP: { x: 0, z: -1 },
+        DOWN: { x: 0, z: 1 },
+        LEFT: { x: -1, z: 0 },
+        RIGHT: { x: 1, z: 0 },
+      }[dir];
+
+      const positions = particles.geometry.attributes.position.array;
+      const vels = particles.userData.velocities;
+
+      for (let i = 0; i < vels.length; i++) {
+        vels[i].life += deltaMs;
+
+        if (vels[i].life >= vels[i].maxLife) {
+          // Reset particle at bike position, trailing behind
+          vels[i].life = 0;
+          vels[i].maxLife = 300 + Math.random() * 200;
+          // Emit from behind the bike
+          vels[i].vx =
+            -vec.x * (0.02 + Math.random() * 0.02) +
+            (Math.random() - 0.5) * 0.01;
+          vels[i].vz =
+            -vec.z * (0.02 + Math.random() * 0.02) +
+            (Math.random() - 0.5) * 0.01;
+          vels[i].vy = 0.005 + Math.random() * 0.005;
+          positions[i * 3] = -vec.x * 0.5 + (Math.random() - 0.5) * 0.3;
+          positions[i * 3 + 1] = 0;
+          positions[i * 3 + 2] = -vec.z * 0.5 + (Math.random() - 0.5) * 0.3;
+        } else {
+          // Move particle
+          positions[i * 3] += vels[i].vx * deltaMs;
+          positions[i * 3 + 1] += vels[i].vy * deltaMs;
+          positions[i * 3 + 2] += vels[i].vz * deltaMs;
+        }
+      }
+      particles.geometry.attributes.position.needsUpdate = true;
+    } else {
+      // Fade out particles when not boosted
+      particles.material.opacity *= 0.92;
+      if (particles.material.opacity < 0.01) {
+        particles.visible = false;
+      }
+    }
+  }
 }
 
 // =============================================================================
@@ -2146,6 +2329,12 @@ function animate() {
   animatePortals(elapsed);
 
   // =========================================================================
+  // BOOST VISUAL EFFECTS
+  // Aura and speed particles when near opponent's trail
+  // =========================================================================
+  updateBoostEffects(elapsed, 16); // ~60fps frame time approximation
+
+  // =========================================================================
   // BIKE VISUAL EFFECTS
   // =========================================================================
 
@@ -2161,22 +2350,43 @@ function animate() {
         bike.position.y = BOARD_SURFACE_Y + bob;
       }
 
-      // Pulse accent glow
-      const pulse = 0.8 + Math.sin(elapsed * 5 + id * Math.PI) * 0.4;
+      // Pulse accent glow - MUCH stronger and faster when boosted (proximity speed-up)
+      const isBoosted = bike.userData.boosted || false;
+      const pulseSpeed = isBoosted ? 20 : 5; // Much faster pulse when boosted
+      const pulseBase = isBoosted ? 2.0 : 0.8; // Much brighter base when boosted
+      const pulseRange = isBoosted ? 1.0 : 0.4; // Much more variation when boosted
+      const pulse =
+        pulseBase + Math.sin(elapsed * pulseSpeed + id * Math.PI) * pulseRange;
+
       if (bike.userData.accentMat) {
         bike.userData.accentMat.emissiveIntensity = pulse;
       }
       if (bike.userData.wheelMat) {
+        const wheelPulse = isBoosted ? 1.0 : 0.2;
+        const wheelRange = isBoosted ? 0.5 : 0.15;
         bike.userData.wheelMat.emissiveIntensity =
-          0.2 + Math.sin(elapsed * 5 + id * Math.PI) * 0.15;
+          wheelPulse +
+          Math.sin(elapsed * pulseSpeed + id * Math.PI) * wheelRange;
       }
 
-      // Update point light
+      // Bike scale effect - slightly larger when boosted for "power-up" feel
+      const targetScale = isBoosted ? 1.15 : 1.0;
+      const currentScale = bike.scale.x;
+      const newScale = currentScale + (targetScale - currentScale) * 0.15; // Smooth transition
+      bike.scale.set(newScale, newScale, newScale);
+
+      // Update point light - MUCH brighter when boosted
       const light = playerLights[id];
       if (light) {
         light.position.x = bike.position.x;
         light.position.z = bike.position.z;
-        light.intensity = 1.5 + Math.sin(elapsed * 5 + id * Math.PI) * 0.5;
+        const baseLightIntensity = isBoosted ? 6 : 1.5;
+        const lightRange = isBoosted ? 2 : 0.5;
+        light.intensity =
+          baseLightIntensity +
+          Math.sin(elapsed * pulseSpeed + id * Math.PI) * lightRange;
+        // Larger light radius when boosted
+        light.distance = isBoosted ? 25 : 15;
       }
     }
   }
@@ -2408,10 +2618,31 @@ function handleState(msg) {
 
       updatePlayerDirection(p.id, p.dir);
 
+      // Proximity speed-up visual indicator
+      // Store boosted state for animation loop to use
+      playerBikes[p.id].userData.boosted = p.boosted || false;
+
       if (playerLights[p.id]) {
         playerLights[p.id].visible = shouldBeVisible;
+        // Boost visual: brighter light when boosted
+        playerLights[p.id].intensity = p.boosted ? 5 : 3;
+      }
+
+      // Update boost indicator UI (DEBUG)
+      const boostEl = p.id === 1 ? boostP1 : boostP2;
+      if (boostEl) {
+        if (p.boosted && p.alive) {
+          boostEl.classList.add("active");
+        } else {
+          boostEl.classList.remove("active");
+        }
       }
     }
+  }
+
+  // Show/hide boost indicator panel based on game state
+  if (boostIndicator) {
+    boostIndicator.style.display = gameStatus === "running" ? "flex" : "none";
   }
 
   // =========================================================================
@@ -2478,13 +2709,18 @@ function handleState(msg) {
     for (const playerId of [1, 2]) {
       const delta = msg.trailsDelta[playerId];
       if (delta) {
-        createTrailSegment(
-          playerId,
-          delta.x,
-          delta.y,
-          undefined,
-          delta.spawnTick
-        );
+        // FIX: Handle both single cell AND array of cells (when boosted)
+        // Server sends array when player moved multiple cells in one tick
+        const cells = Array.isArray(delta) ? delta : [delta];
+        for (const cell of cells) {
+          createTrailSegment(
+            playerId,
+            cell.x,
+            cell.y,
+            undefined,
+            cell.spawnTick
+          );
+        }
       }
     }
   }
