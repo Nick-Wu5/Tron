@@ -16,7 +16,9 @@ import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.m
 // CONFIGURATION
 // =============================================================================
 
-const WS_URL = `ws://${window.location.host}`;
+// WebSocket URL: use wss:// for HTTPS (Render), ws:// for HTTP (local dev)
+const WS_PROTOCOL = window.location.protocol === "https:" ? "wss:" : "ws:";
+const WS_URL = `${WS_PROTOCOL}//${window.location.host}`;
 
 // =============================================================================
 // BACKGROUND MUSIC CONFIGURATION
@@ -79,8 +81,8 @@ let myReadyState = false;
 // =============================================================================
 let trailTiming = {
   tickInterval: 50, // ms per tick (default, updated from server)
-  solidMs: 2000,    // ms segment stays fully visible
-  fadeMs: 1000,     // ms segment takes to fade out
+  solidMs: 2000, // ms segment stays fully visible
+  fadeMs: 1000, // ms segment takes to fade out
 };
 let serverTickOffset = 0; // performance.now() at tick 0 (for local time sync)
 
@@ -1374,12 +1376,13 @@ function createTrailSegment(playerId, x, y, direction, spawnTick) {
   mesh.userData.direction = dir;
   mesh.userData.isCorner = isCorner;
   mesh.userData.playerId = playerId;
-  
+
   // Calculate spawn time from server tick (or use current time if not provided)
   // This keeps fade timing synchronized with server's trail expiration
   if (spawnTick !== undefined && serverTickOffset > 0) {
     // Convert server tick to local time
-    mesh.userData.spawnTime = serverTickOffset + (spawnTick * trailTiming.tickInterval);
+    mesh.userData.spawnTime =
+      serverTickOffset + spawnTick * trailTiming.tickInterval;
   } else {
     // Fallback: use current time (for segments created before sync established)
     mesh.userData.spawnTime = performance.now();
@@ -1431,28 +1434,30 @@ function updatePortals(portals) {
   if (JSON.stringify(portals) === JSON.stringify(portalData)) {
     return; // No change
   }
-  
+
   clearAllPortals();
   portalData = portals || [];
-  
+
   for (let i = 0; i < portalData.length; i++) {
     const pair = portalData[i];
-    
+
     // Create portal A
     const portalA = createPortalMesh(PORTAL_COLOR_A, i * 2);
     const worldPosA = gridToWorld(pair.a.x, pair.a.y);
     portalA.position.set(worldPosA.x, PORTAL_HEIGHT, worldPosA.z);
     scene.add(portalA);
     portalMeshes.push(portalA);
-    
+
     // Create portal B
     const portalB = createPortalMesh(PORTAL_COLOR_B, i * 2 + 1);
     const worldPosB = gridToWorld(pair.b.x, pair.b.y);
     portalB.position.set(worldPosB.x, PORTAL_HEIGHT, worldPosB.z);
     scene.add(portalB);
     portalMeshes.push(portalB);
-    
-    console.log(`[Portals] Created pair ${i}: A(${pair.a.x},${pair.a.y}) B(${pair.b.x},${pair.b.y})`);
+
+    console.log(
+      `[Portals] Created pair ${i}: A(${pair.a.x},${pair.a.y}) B(${pair.b.x},${pair.b.y})`
+    );
   }
 }
 
@@ -1465,9 +1470,14 @@ function updatePortals(portals) {
 function createPortalMesh(color, index) {
   const group = new THREE.Group();
   group.userData.portalIndex = index;
-  
+
   // Main torus ring
-  const torusGeom = new THREE.TorusGeometry(PORTAL_RADIUS, PORTAL_TUBE_RADIUS, 16, 32);
+  const torusGeom = new THREE.TorusGeometry(
+    PORTAL_RADIUS,
+    PORTAL_TUBE_RADIUS,
+    16,
+    32
+  );
   const torusMat = new THREE.MeshStandardMaterial({
     color: color,
     emissive: color,
@@ -1480,9 +1490,14 @@ function createPortalMesh(color, index) {
   const torus = new THREE.Mesh(torusGeom, torusMat);
   torus.rotation.x = Math.PI / 2; // Lay flat on the board
   group.add(torus);
-  
+
   // Inner glow ring (smaller, brighter)
-  const innerGeom = new THREE.TorusGeometry(PORTAL_RADIUS * 0.6, PORTAL_TUBE_RADIUS * 0.5, 12, 24);
+  const innerGeom = new THREE.TorusGeometry(
+    PORTAL_RADIUS * 0.6,
+    PORTAL_TUBE_RADIUS * 0.5,
+    12,
+    24
+  );
   const innerMat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     emissive: color,
@@ -1496,17 +1511,17 @@ function createPortalMesh(color, index) {
   inner.rotation.x = Math.PI / 2;
   inner.position.y = 0.05;
   group.add(inner);
-  
+
   // Point light for glow effect
   const light = new THREE.PointLight(color, 2, 8);
   light.position.y = 0.5;
   group.add(light);
-  
+
   // Store materials for animation
   group.userData.torusMat = torusMat;
   group.userData.innerMat = innerMat;
   group.userData.light = light;
-  
+
   return group;
 }
 
@@ -1535,10 +1550,10 @@ function animatePortals(elapsed) {
   for (const portal of portalMeshes) {
     const index = portal.userData.portalIndex || 0;
     const offset = index * Math.PI * 0.5; // Phase offset per portal
-    
+
     // Rotate the portal
     portal.rotation.y = elapsed * 0.5 + offset;
-    
+
     // Pulse the glow
     const pulse = 0.7 + Math.sin(elapsed * 3 + offset) * 0.3;
     if (portal.userData.torusMat) {
@@ -1550,7 +1565,7 @@ function animatePortals(elapsed) {
     if (portal.userData.light) {
       portal.userData.light.intensity = 1.5 + pulse;
     }
-    
+
     // Subtle bob
     portal.position.y = PORTAL_HEIGHT + Math.sin(elapsed * 2 + offset) * 0.05;
   }
@@ -1824,29 +1839,29 @@ function clearAllExplosions() {
 /**
  * Updates trail segment opacity and removes fully faded segments.
  * Called every frame in the animation loop.
- * 
+ *
  * Fade timeline per segment:
  * - 0 to solidMs: Full opacity (0.92)
  * - solidMs to (solidMs + fadeMs): Linear fade from 0.92 to 0
  * - After (solidMs + fadeMs): Remove segment
- * 
+ *
  * @param {number} now - Current time from performance.now()
  */
 function updateTrailFade(now) {
   const { solidMs, fadeMs } = trailTiming;
   const totalMs = solidMs + fadeMs;
   const baseOpacity = 0.92; // Match createTrailMaterial starting opacity
-  
+
   // Track segments to remove (can't modify Map while iterating)
   const toRemove = [];
-  
+
   for (const playerId of [1, 2]) {
     for (const [key, mesh] of trailMeshes[playerId]) {
       const spawnTime = mesh.userData.spawnTime;
       if (!spawnTime) continue; // Safety check
-      
+
       const age = now - spawnTime;
-      
+
       if (age >= totalMs) {
         // Segment expired - mark for removal
         toRemove.push({ playerId, key, mesh });
@@ -1854,7 +1869,7 @@ function updateTrailFade(now) {
         // In fade phase - compute opacity
         const fadeProgress = (age - solidMs) / fadeMs; // 0 to 1
         const opacity = baseOpacity * (1 - fadeProgress);
-        
+
         // Update material opacity and emissive intensity
         if (mesh.material) {
           mesh.material.opacity = Math.max(0, opacity);
@@ -1865,7 +1880,7 @@ function updateTrailFade(now) {
       // else: age <= solidMs, keep full opacity (already set at creation)
     }
   }
-  
+
   // Remove expired segments
   for (const { playerId, key, mesh } of toRemove) {
     scene.remove(mesh);
@@ -2225,10 +2240,11 @@ function updatePlayerDirection(playerId, dir) {
 // =============================================================================
 
 function connect() {
+  console.log("[WebSocket] Connecting to:", WS_URL);
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
-    console.log("Connected to server");
+    console.log("[WebSocket] Connected successfully");
     connectionStatus.textContent =
       "Connected - Waiting for player assignment...";
     connectionStatus.className = "status connected";
@@ -2243,7 +2259,9 @@ function connect() {
   };
 
   ws.onerror = (err) => {
-    console.error("WebSocket error:", err);
+    console.error("[WebSocket] Connection error:", err);
+    console.error("[WebSocket] Failed to connect to:", WS_URL);
+    connectionStatus.textContent = "Connection error - check console";
   };
 
   ws.onmessage = (event) => {
@@ -2312,12 +2330,12 @@ function handleState(msg) {
     trailTiming.solidMs = msg.trailTiming.solidMs || 2000;
     trailTiming.fadeMs = msg.trailTiming.fadeMs || 1000;
   }
-  
+
   // Calculate server tick offset for converting spawnTick to local time
   // serverTickOffset + (tick * tickInterval) = performance.now() at that tick
   // So: serverTickOffset = now - (tick * tickInterval)
   const now = performance.now();
-  serverTickOffset = now - (msg.tick * trailTiming.tickInterval);
+  serverTickOffset = now - msg.tick * trailTiming.tickInterval;
 
   const isNewRound =
     msg.tick < lastTick ||
@@ -2339,7 +2357,7 @@ function handleState(msg) {
     // Reset tick offset for new round
     serverTickOffset = now;
   }
-  
+
   // =========================================================================
   // PORTAL SYNC
   // Update portal positions from server (only changes on new round)
@@ -2460,7 +2478,13 @@ function handleState(msg) {
     for (const playerId of [1, 2]) {
       const delta = msg.trailsDelta[playerId];
       if (delta) {
-        createTrailSegment(playerId, delta.x, delta.y, undefined, delta.spawnTick);
+        createTrailSegment(
+          playerId,
+          delta.x,
+          delta.y,
+          undefined,
+          delta.spawnTick
+        );
       }
     }
   }

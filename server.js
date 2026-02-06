@@ -14,7 +14,12 @@ const path = require("path");
 const WebSocket = require("ws");
 const Game = require("./game.js");
 
-const PORT = 3000;
+// =============================================================================
+// PORT CONFIGURATION (RENDER-COMPATIBLE)
+// Render assigns a dynamic port via process.env.PORT
+// Fallback to 3000 for local development
+// =============================================================================
+const PORT = process.env.PORT || 3000;
 
 // Create HTTP server to serve static files
 const httpServer = http.createServer((req, res) => {
@@ -50,8 +55,10 @@ const wss = new WebSocket.Server({ server: httpServer });
 const game = new Game();
 
 // Start HTTP server
-httpServer.listen(PORT, () => {
-  console.log(`Tron server running at http://localhost:${PORT}`);
+// Bind to 0.0.0.0 for cloud platforms (Render requires this)
+httpServer.listen(PORT, "0.0.0.0", () => {
+  console.log(`Tron server running on port ${PORT}`);
+  console.log(`Local: http://localhost:${PORT}`);
   console.log(`Open two browser tabs to play!`);
 });
 
